@@ -16,10 +16,14 @@
     consumers: {},
     consumedProducerIds: {},
     remoteStreams: {},
+    remoteUserMeta: {},
+    participantDirectory: {},
     isMicEnabled: true,
     isCameraEnabled: true,
+    isSpeakerEnabled: true,
     hasRealDevices: false,
     facingMode: "user",
+    groupName: "Group Call",
   };
 
   var mediasoupLoaderPromise = null;
@@ -37,6 +41,104 @@
       $("#subTitle").text(sub);
     }
     postToFlutter("state", { state: text });
+  }
+
+  function escapeHtml(value) {
+    if (value == null) return "";
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function getDisplayName(userId) {
+    if (!userId) return "Unknown";
+    if (userId === state.userId) return "You";
+
+    var meta = state.remoteUserMeta[userId] || {};
+    var byMeta = meta.senderName || meta.name || meta.fullName;
+    var byDirectory = state.participantDirectory[userId];
+    if (byMeta) return String(byMeta);
+    if (byDirectory) return String(byDirectory);
+
+    if (String(userId).length > 8) {
+      return "User " + String(userId).slice(0, 6) + "...";
+    }
+    return String(userId);
+  }
+
+  function setLocalAudioBadge(enabled) {
+    var badge = document.getElementById("localBadge");
+    if (!badge) return;
+    if (enabled) {
+      badge.classList.remove("muted");
+      badge.textContent = "local";
+    } else {
+      badge.classList.add("muted");
+      badge.textContent = "muted";
+    }
+  }
+
+  function setRemoteAudioBadge(userId, enabled) {
+    var badge = document.getElementById("badge-" + userId);
+    if (!badge) return;
+
+    if (enabled === false) {
+      badge.classList.add("muted");
+      badge.textContent = "muted";
+    } else {
+      badge.classList.remove("muted");
+      badge.textContent = "remote";
+    }
+  }
+
+  function updateRemoteTileMeta(userId) {
+    var name = document.getElementById("name-" + userId);
+    if (name) {
+      name.textContent = getDisplayName(userId);
+    }
+
+    var meta = state.remoteUserMeta[userId] || {};
+    if (typeof meta.audio === "boolean") {
+      setRemoteAudioBadge(userId, meta.audio);
+    }
+  }
+
+  function updateGridLayout() {
+    var grid = document.getElementById("grid");
+    if (!grid) return;
+
+    var remoteTiles = Array.from(
+      grid.querySelectorAll(".tile[id^='remote-']")
+    );
+
+    remoteTiles.forEach(function (tile) {
+      tile.classList.remove("primary-remote");
+    });
+
+    grid.classList.remove("layout-single", "layout-dual", "layout-multi");
+
+    var remoteCount = remoteTiles.length;
+    if (remoteCount === 0) {
+      grid.classList.add("layout-single");
+      grid.style.removeProperty("--remote-cols");
+      return;
+    }
+
+    if (remoteCount === 1) {
+      grid.classList.add("layout-dual");
+      remoteTiles[0].classList.add("primary-remote");
+      grid.style.removeProperty("--remote-cols");
+      return;
+    }
+
+    grid.classList.add("layout-multi");
+
+    var totalParticipants = remoteCount + 1;
+    var cols = totalParticipants <= 4 ? 2 : 3;
+    grid.style.setProperty("--remote-cols", String(cols));
   }
 
   function ensureMediasoupDeviceCtor() {
@@ -221,7 +323,7 @@
     if (!existing) {
       var tile = document.createElement("section");
       tile.id = tileId;
-      tile.className = "tile";
+      tile.className = "tile remote";
 
       var video = document.createElement("video");
       video.autoplay = true;
@@ -231,7 +333,9 @@
 
       var meta = document.createElement("div");
       meta.className = "meta";
-      meta.innerHTML = "<span class=\"name\">" + userId + "</span><span id=\"badge-" + userId + "\" class=\"badge\">remote</span>";
+      meta.innerHTML = "<span class=\"name\" id=\"name-" + userId + "\">" +
+        escapeHtml(getDisplayName(userId)) +
+        "</span><span id=\"badge-" + userId + "\" class=\"badge\">remote</span>";
       tile.appendChild(meta);
 
       document.getElementById("grid").appendChild(tile);
@@ -244,11 +348,22 @@
       videoEl.play().catch(function () {});
     }
 
-    var badge = document.getElementById("badge-" + userId);
-    if (badge && kind === "audio" && stream.getAudioTracks().length === 0) {
-      badge.classList.add("muted");
-      badge.textContent = "audio muted";
+    if (kind === "audio") {
+      var audioEnabled = stream.getAudioTracks().some(function (track) {
+        return track.enabled;
+      });
+      var meta = state.remoteUserMeta[userId] || {};
+      meta.audio = audioEnabled;
+      state.remoteUserMeta[userId] = meta;
+      setRemoteAudioBadge(userId, audioEnabled);
+      postToFlutter("remote_audio", {
+        userId: userId,
+        enabled: audioEnabled,
+      });
     }
+
+    updateRemoteTileMeta(userId);
+    updateGridLayout();
   }
 
   async function initializeMedia() {
@@ -304,6 +419,7 @@
 
     state.isCameraEnabled = state.localStream.getVideoTracks().length > 0;
     state.isMicEnabled = state.localStream.getAudioTracks().length > 0;
+    setLocalAudioBadge(state.isMicEnabled);
 
     if (!state.hasRealDevices) {
       setStatus("media_fallback", "Using fallback media stream (camera/mic unavailable).");
@@ -335,6 +451,55 @@
       state.socket.emit("joinSelf", state.userId);
     });
 
+    state.socket.on("FE-user-join", function (users) {
+      if (!Array.isArray(users)) return;
+
+      users.forEach(function (entry) {
+        if (!entry || typeof entry !== "object") return;
+
+        var socketId = entry.userId ? String(entry.userId) : "";
+        var info = entry.info && typeof entry.info === "object" ? entry.info : {};
+        var userName = info.userName ? String(info.userName) : "";
+
+        if (!userName) return;
+        if (userName === state.userId) return;
+        if (socketId && state.socket && socketId === state.socket.id) return;
+
+        var displayName =
+          info.senderName ||
+          info.name ||
+          info.fullName ||
+          state.participantDirectory[userName] ||
+          userName;
+
+        state.participantDirectory[userName] = String(displayName);
+        state.remoteUserMeta[userName] = {
+          socketId: socketId,
+          senderName: info.senderName || "",
+          name: info.name || displayName,
+          fullName: info.fullName || info.name || displayName,
+          audio: info.audio !== false,
+          video: info.video !== false,
+        };
+
+        if (!state.remoteStreams[userName]) {
+          state.remoteStreams[userName] = new MediaStream();
+        }
+
+        upsertRemoteTile(userName, state.remoteStreams[userName], "video");
+
+        if (typeof info.audio === "boolean") {
+          setRemoteAudioBadge(userName, info.audio);
+          postToFlutter("remote_audio", {
+            userId: userName,
+            enabled: info.audio,
+          });
+        }
+      });
+
+      updateGridLayout();
+    });
+
     state.socket.on("MS-new-producer", async function (payload) {
       try {
         if (!payload || !payload.producerId) return;
@@ -349,8 +514,57 @@
       var userName = payload && payload.userName;
       if (!userName) return;
       delete state.remoteStreams[userName];
+      delete state.remoteUserMeta[userName];
       var tile = document.getElementById("remote-" + userName);
       if (tile) tile.remove();
+      updateGridLayout();
+    });
+
+    state.socket.on("FE-toggle-camera", function (payload) {
+      if (!payload || typeof payload !== "object") return;
+
+      var switchTarget = payload.switchTarget;
+      if (switchTarget !== "audio") return;
+
+      var socketUserId = payload.userId ? String(payload.userId) : "";
+      var mappedUserId = "";
+
+      Object.keys(state.remoteUserMeta).some(function (uid) {
+        if (state.remoteUserMeta[uid] && state.remoteUserMeta[uid].socketId === socketUserId) {
+          mappedUserId = uid;
+          return true;
+        }
+        return false;
+      });
+
+      if (!mappedUserId && payload.userName) {
+        mappedUserId = String(payload.userName);
+      }
+
+      if (!mappedUserId || mappedUserId === state.userId) {
+        return;
+      }
+
+      var meta = state.remoteUserMeta[mappedUserId] || {};
+      var enabled;
+      if (typeof payload.isEnabled === "boolean") {
+        enabled = payload.isEnabled;
+      } else if (typeof payload.audio === "boolean") {
+        enabled = payload.audio;
+      } else if (typeof payload.enabled === "boolean") {
+        enabled = payload.enabled;
+      } else {
+        enabled = meta.audio === false;
+      }
+
+      meta.audio = enabled;
+      state.remoteUserMeta[mappedUserId] = meta;
+
+      setRemoteAudioBadge(mappedUserId, enabled);
+      postToFlutter("remote_audio", {
+        userId: mappedUserId,
+        enabled: enabled,
+      });
     });
 
     state.socket.on("FE-call-ended", function () {
@@ -568,11 +782,27 @@
     state.roomId = payload.roomId;
     state.userId = payload.userId;
     state.fullName = payload.fullName || payload.userId;
+    state.groupName = payload.groupName || "Group Call";
     state.callType = payload.callType || "video";
     state.joinEvent = payload.joinEvent || "BE-join-room";
     state.leaveEvent = payload.leaveEvent || "BE-leave-room";
+    state.participantDirectory = {};
+    state.remoteUserMeta = {};
 
-    $("#roomTitle").text("Room " + state.roomId);
+    if (payload.participants && typeof payload.participants === "object") {
+      Object.keys(payload.participants).forEach(function (uid) {
+        var name = payload.participants[uid];
+        if (uid && name) {
+          state.participantDirectory[String(uid)] = String(name);
+        }
+      });
+    }
+
+    if (state.userId && state.fullName) {
+      state.participantDirectory[state.userId] = state.fullName;
+    }
+
+    $("#roomTitle").text(state.groupName);
 
     if (!payload.socketUrl) {
       throw new Error("missing-socket-url");
@@ -645,8 +875,10 @@
 
     if (state.socket) {
       try {
+        state.socket.off("FE-user-join");
         state.socket.off("MS-new-producer");
         state.socket.off("FE-user-leave");
+        state.socket.off("FE-toggle-camera");
         state.socket.off("FE-call-ended");
         state.socket.disconnect();
       } catch (_) {}
@@ -660,12 +892,16 @@
     state.audioProducer = null;
     state.videoProducer = null;
     state.remoteStreams = {};
+    state.remoteUserMeta = {};
+    state.participantDirectory = {};
     state.consumedProducerIds = {};
 
     var tiles = document.querySelectorAll(".tile[id^='remote-']");
     tiles.forEach(function (el) {
       el.remove();
     });
+
+    updateGridLayout();
 
     setStatus("left", "You left the call.");
     postToFlutter("ended", {});
@@ -688,6 +924,15 @@
     }
 
     state.isMicEnabled = enabled;
+    setLocalAudioBadge(enabled);
+
+    if (state.socket && state.roomId) {
+      state.socket.emit("BE-toggle-camera-audio", {
+        roomId: state.roomId,
+        switchTarget: "audio",
+      });
+    }
+
     postToFlutter("mic", { enabled: enabled });
   }
 
@@ -709,6 +954,14 @@
     }
 
     state.isCameraEnabled = enabled;
+
+    if (state.socket && state.roomId) {
+      state.socket.emit("BE-toggle-camera-audio", {
+        roomId: state.roomId,
+        switchTarget: "video",
+      });
+    }
+
     postToFlutter("camera", { enabled: enabled });
   }
 
@@ -761,6 +1014,11 @@
     state.facingMode = nextFacing;
   }
 
+  function toggleSpeaker(enabled) {
+    state.isSpeakerEnabled = enabled;
+    postToFlutter("speaker", { enabled: enabled });
+  }
+
   function receiveFromFlutter(raw) {
     try {
       var parsed = JSON.parse(raw);
@@ -776,6 +1034,13 @@
             message: (err && err.name ? err.name + ": " : "") + (err && err.message ? err.message : String(err)),
           });
         });
+      } else if (action === "rejectCall") {
+        if (state.socket && payload.roomId) {
+          state.socket.emit("BE-reject-call", {
+            roomId: payload.roomId,
+          });
+        }
+        stopCall();
       } else if (action === "leaveCall") {
         stopCall();
       } else if (action === "toggleMic") {
@@ -788,6 +1053,8 @@
             message: "switch-camera-failed: " + (err && err.message ? err.message : String(err)),
           });
         });
+      } else if (action === "toggleSpeaker") {
+        toggleSpeaker(!!payload.enabled);
       } else if (action === "reconnect") {
         if (state.socket && !state.socket.connected) {
           state.socket.connect();
@@ -808,6 +1075,8 @@
       message: (err && err.name ? err.name + ": " : "") + (err && err.message ? err.message : "mediasoup-load-failed"),
     });
   });
+
+  updateGridLayout();
 
   // Ready signal for Flutter side.
   postToFlutter("ready", {});

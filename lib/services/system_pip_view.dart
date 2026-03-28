@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:get/get.dart';
+import 'package:cu_app/Features/Group_Call_Embeded/controller/group_call_embeded_controller.dart';
 import 'package:cu_app/Features/Group_Call/controller/group_call.dart';
 import 'package:cu_app/Features/GuestCall/controller/guest_call_controller.dart';
 import 'package:cu_app/services/call_service.dart';
@@ -61,6 +62,15 @@ class _PipVideoContent extends StatelessWidget {
         print("[PipFeature] Rendering Guest Call PiP");
         return _buildGuestPip(guestController);
       }
+
+      final embeddedController = Get.isRegistered<GroupCallEmbededController>()
+          ? Get.find<GroupCallEmbededController>()
+          : null;
+      if (embeddedController != null && embeddedController.isCallActive.value) {
+        print("[PipFeature] Rendering Embedded Call PiP");
+        return _buildEmbeddedPip(embeddedController);
+      }
+
       print("[PipFeature] No active call found for PiP");
       return _callEndedView();
     } catch (e) {
@@ -130,6 +140,50 @@ class _PipVideoContent extends StatelessWidget {
       color: Colors.black,
       child: const Center(
         child: Icon(Icons.call, color: Colors.green, size: 48),
+      ),
+    );
+  }
+
+  Widget _buildEmbeddedPip(GroupCallEmbededController controller) {
+    final title = controller.groupModel.value.groupName ?? "Group Call";
+    final subtitle = controller.isThisVideoCall.value
+        ? "Video call in progress"
+        : "Audio call in progress";
+
+    return Container(
+      color: Colors.black,
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              controller.isThisVideoCall.value ? Icons.videocam : Icons.call,
+              color: Colors.white,
+              size: 38,
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

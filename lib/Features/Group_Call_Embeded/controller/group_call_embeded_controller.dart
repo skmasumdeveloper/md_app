@@ -1,10 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:audio_session/audio_session.dart';
 import 'package:cu_app/Api/urls.dart';
+import 'package:cu_app/Commons/platform_channels.dart';
+import 'package:cu_app/Features/Home/Model/group_list_model.dart';
+import 'package:cu_app/Features/Home/Repository/group_repo.dart';
 import 'package:cu_app/Utils/storage_service.dart';
 import 'package:cu_app/Features/Group_Call_Embeded/presentation/group_call_embeded_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -14,14 +20,25 @@ class GroupCallEmbededController extends GetxController {
   final RxBool isAnyCallActive = false.obs;
   final RxBool isMicEnabled = true.obs;
   final RxBool isCameraEnabled = true.obs;
+  final RxBool isSpeakerOn = true.obs;
   final RxBool isThisVideoCall = true.obs;
   final RxBool isConnecting = false.obs;
   final RxString currentRoomId = ''.obs;
   final RxString callState = 'idle'.obs;
+  final RxMap<String, bool> remoteAudioEnabled = <String, bool>{}.obs;
+  final Rx<GroupModel> groupModel = GroupModel().obs;
+
+  final GroupRepo _groupRepo = GroupRepo();
 
   WebViewController? _webViewController;
   Completer<void>? _pageReadyCompleter;
   Map<String, dynamic>? _pendingBootstrap;
+
+  @override
+  void onInit() {
+    super.onInit();
+    unawaited(configureAudioSession());
+  }
 
   bool get isPageReady =>
       _pageReadyCompleter != null && _pageReadyCompleter!.isCompleted;
@@ -77,13 +94,24 @@ class GroupCallEmbededController extends GetxController {
 
   Future<void> leaveCall(
       {required String roomId, required String userId}) async {
-    await _sendToWeb('leaveCall', {'roomId': roomId, 'userId': userId});
+    if (roomId.isNotEmpty) {
+      await _sendToWeb('leaveCall', {'roomId': roomId, 'userId': userId});
+    }
 
     isCallActive.value = false;
     isAnyCallActive.value = false;
     isConnecting.value = false;
+    isSpeakerOn.value = true;
     callState.value = 'left';
     currentRoomId.value = '';
+    _pendingBootstrap = null;
+    remoteAudioEnabled.clear();
+
+    await deactivateAudioSession();
+
+    try {
+      await FlutterCallkitIncoming.endAllCalls();
+    } catch (_) {}
 
     await LocalStorage().setIsAnyCallActive(false);
     await LocalStorage().clearActiveCallRoomId();
@@ -112,7 +140,9 @@ class GroupCallEmbededController extends GetxController {
   }
 
   Future<void> toggleSpeaker() async {
-    await _sendToWeb('toggleSpeaker', const {});
+    isSpeakerOn.value = !isSpeakerOn.value;
+    await setAudioToSpeaker(isSpeakerOn.value);
+    await _sendToWeb('toggleSpeaker', {'enabled': isSpeakerOn.value});
   }
 
   Future<void> _openCallScreen({
@@ -130,6 +160,9 @@ class GroupCallEmbededController extends GetxController {
     callState.value = 'preparing';
 
     try {
+      final groupName = await _getGroupDetailsById(roomId, 'groupName');
+      final participants = _buildParticipantDirectory();
+
       final granted = await _requestMediaPermission(isVideoCall: isVideoCall);
       if (!granted) {
         callState.value = 'permission_denied';
@@ -146,8 +179,12 @@ class GroupCallEmbededController extends GetxController {
       isThisVideoCall.value = isVideoCall;
       isMicEnabled.value = true;
       isCameraEnabled.value = isVideoCall;
+      isSpeakerOn.value = isVideoCall;
       isCallActive.value = true;
       isAnyCallActive.value = true;
+
+      await activateAudioSession();
+      await setAudioToSpeaker(isSpeakerOn.value);
 
       await LocalStorage().setIsAnyCallActive(true);
       await LocalStorage().setActiveCallRoomId(roomId);
@@ -156,8 +193,10 @@ class GroupCallEmbededController extends GetxController {
       _pendingBootstrap = {
         'socketUrl': ApiPath.socketUrl,
         'roomId': roomId,
+        'groupName': groupName,
         'userId': userId,
         'fullName': userFullName,
+        'participants': participants,
         'callType': isVideoCall ? 'video' : 'audio',
         'joinEvent': 'BE-join-room',
         'leaveEvent': 'BE-leave-room',
@@ -169,10 +208,12 @@ class GroupCallEmbededController extends GetxController {
 
       Get.to(() => GroupCallEmbededScreen(
             roomId: roomId,
-            groupName: 'Group Call',
+            groupName: groupName,
             isVideoCall: isVideoCall,
+            isMeeting: groupModel.value.isTemp == true,
           ));
     } catch (e) {
+      await deactivateAudioSession();
       callState.value = 'error';
       isConnecting.value = false;
       isCallActive.value = false;
@@ -213,6 +254,13 @@ class GroupCallEmbededController extends GetxController {
         case 'camera':
           if (payload['enabled'] is bool) {
             isCameraEnabled.value = payload['enabled'] as bool;
+          }
+          break;
+        case 'remote_audio':
+          final userId = payload['userId']?.toString() ?? '';
+          final enabled = payload['enabled'];
+          if (userId.isNotEmpty && enabled is bool) {
+            remoteAudioEnabled[userId] = enabled;
           }
           break;
         case 'ended':
@@ -271,5 +319,95 @@ class GroupCallEmbededController extends GetxController {
     }
 
     return true;
+  }
+
+  Future<String> _getGroupDetailsById(String groupId, String field) async {
+    try {
+      final res = await _groupRepo.getGroupDetailsById(groupId: groupId);
+      if (res.data != null) {
+        groupModel.value = res.data!;
+      }
+
+      if (field == 'groupName') {
+        final name = groupModel.value.groupName;
+        if (name != null && name.isNotEmpty) {
+          return name;
+        }
+      }
+    } catch (_) {}
+
+    return 'Group Call';
+  }
+
+  Map<String, String> _buildParticipantDirectory() {
+    final Map<String, String> participants = <String, String>{};
+
+    final currentUsers = groupModel.value.currentUsers;
+    if (currentUsers != null) {
+      for (final user in currentUsers) {
+        final id = user.sId ?? '';
+        final name = user.name ?? '';
+        if (id.isNotEmpty && name.isNotEmpty) {
+          participants[id] = name;
+        }
+      }
+    }
+
+    final localUserId = LocalStorage().getUserId();
+    final localUserName = LocalStorage().getUserName();
+    if (localUserId.isNotEmpty && localUserName.isNotEmpty) {
+      participants[localUserId] = localUserName;
+    }
+
+    return participants;
+  }
+
+  Future<void> setSpeakerMode(bool speakerOn) async {
+    try {
+      await PlatformChannels.iosaudioplatform.invokeMethod('setSpeakerMode', {
+        'speakerOn': speakerOn,
+      });
+    } catch (_) {}
+  }
+
+  Future<void> configureAudioSession() async {
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
+        avAudioSessionCategoryOptions:
+            AVAudioSessionCategoryOptions.allowBluetooth |
+                AVAudioSessionCategoryOptions.defaultToSpeaker,
+        avAudioSessionMode: AVAudioSessionMode.voiceChat,
+        androidAudioAttributes: const AndroidAudioAttributes(
+          contentType: AndroidAudioContentType.speech,
+          usage: AndroidAudioUsage.voiceCommunication,
+        ),
+        androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+        androidWillPauseWhenDucked: false,
+      ));
+    } catch (_) {}
+  }
+
+  Future<void> activateAudioSession() async {
+    try {
+      final session = await AudioSession.instance;
+      await session.setActive(true);
+    } catch (_) {}
+  }
+
+  Future<void> deactivateAudioSession() async {
+    try {
+      final session = await AudioSession.instance;
+      await session.setActive(false);
+    } catch (_) {}
+  }
+
+  Future<void> setAudioToSpeaker([bool speakerOn = true]) async {
+    try {
+      await Helper.setSpeakerphoneOn(speakerOn);
+    } catch (_) {}
+
+    await setSpeakerMode(speakerOn);
   }
 }

@@ -2,7 +2,6 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:cu_app/Commons/app_strings.dart';
 import 'package:cu_app/Features/Group_Call_Embeded/controller/group_call_embeded_controller.dart';
@@ -233,7 +232,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
           case Event.actionCallAccept:
             //  accepted an incoming call
             //  show screen calling in Flutter
-            if (Platform.isAndroid) {}
+            Future.delayed(const Duration(milliseconds: 350), () {
+              checkAndNavigationCallingPage();
+            });
 
             break;
           case Event.actionCallDecline:
@@ -309,17 +310,22 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             if (isOnChatScreen) {
               final groupcallController = Get.put(GroupcallController());
               Future.delayed(const Duration(seconds: 1), () {
+                GroupCallEmbededController? embeddedController;
+                if (GroupCallEmbededConfig.enabled) {
+                  embeddedController = Get.put(GroupCallEmbededController());
+                }
+
                 // guard against duplicated navigation
                 if (groupcallController.isCallActive.value ||
+                    (embeddedController?.isCallActive.value == true) ||
                     groupcallController.isNavigatingToCall ||
                     Get.currentRoute.contains('GroupVideoCallScreen') ||
                     Get.currentRoute.contains('GroupCallEmbededScreen')) {
                   return;
                 }
 
-                if (GroupCallEmbededConfig.enabled) {
-                  final embeddedController =
-                      Get.put(GroupCallEmbededController());
+                if (GroupCallEmbededConfig.enabled &&
+                    embeddedController != null) {
                   embeddedController.outgoingCallEmit(
                     currentCall['extra']['groupId'],
                     isVideoCall: callType == 'video' ? true : false,

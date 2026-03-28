@@ -116,6 +116,9 @@ class SocketController extends GetxController {
                   Get.currentRoute.contains('GroupCallEmbededScreen'));
 
           if (isEmbeddedCallActive) {
+            try {
+              Get.find<GroupCallEmbededController>().reCallConnect();
+            } catch (_) {}
             debugPrint(
                 '[Socket] connect: skip native reCallConnect (embedded call mode active)');
             return;
