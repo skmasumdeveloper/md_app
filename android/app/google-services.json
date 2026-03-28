@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "964360348529",
+    "project_id": "cu-app-6e0b5",
+    "storage_bucket": "cu-app-6e0b5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:964360348529:android:2ea480b9c0ead5b0faccd0",
+        "android_client_info": {
+          "package_name": "com.excellisit.cuapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDBQ3uXK4vIi29JfeJdnRRly6saQ114XWU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

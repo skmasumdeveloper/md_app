@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CU Embedded Group Call</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+  </head>
+  <body>
+    <div class="bg"></div>
+
+    <header class="topbar">
+      <div>
+        <h1 id="roomTitle">Group Call</h1>
+        <p id="subTitle">Preparing media...</p>
+      </div>
+      <div class="pill" id="statusPill">idle</div>
+    </header>
+
+    <main id="grid" class="grid">
+      <section class="tile local">
+        <video id="localVideo" autoplay playsinline muted></video>
+        <div class="meta">
+          <span class="name">You</span>
+          <span class="badge" id="localBadge">local</span>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
