@@ -138,6 +138,30 @@ body {
   font-size: 12px;
 }
 
+.mute-icon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: none;
+  place-items: center;
+  background: rgba(2, 6, 23, 0.78);
+  border: 1px solid rgba(239, 68, 68, 0.62);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.42);
+  z-index: 8;
+}
+
+.mute-icon.show {
+  display: grid;
+}
+
+.mute-icon-symbol {
+  font-size: 15px;
+  line-height: 1;
+}
+
 .badge {
   border-radius: 999px;
   padding: 4px 8px;

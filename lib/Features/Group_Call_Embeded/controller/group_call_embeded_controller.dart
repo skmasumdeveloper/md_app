@@ -8,6 +8,8 @@ import 'package:cu_app/Features/Home/Model/group_list_model.dart';
 import 'package:cu_app/Features/Home/Repository/group_repo.dart';
 import 'package:cu_app/Utils/storage_service.dart';
 import 'package:cu_app/Features/Group_Call_Embeded/presentation/group_call_embeded_screen.dart';
+import 'package:cu_app/services/call_service.dart';
+import 'package:cu_app/services/embedded_call_overlay_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -22,6 +24,7 @@ class GroupCallEmbededController extends GetxController {
   final RxBool isCameraEnabled = true.obs;
   final RxBool isSpeakerOn = true.obs;
   final RxBool isThisVideoCall = true.obs;
+  final RxBool isInOverlayMode = false.obs;
   final RxBool isConnecting = false.obs;
   final RxString currentRoomId = ''.obs;
   final RxString callState = 'idle'.obs;
@@ -42,6 +45,8 @@ class GroupCallEmbededController extends GetxController {
 
   bool get isPageReady =>
       _pageReadyCompleter != null && _pageReadyCompleter!.isCompleted;
+
+  WebViewController? get webViewController => _webViewController;
 
   void attachWebController(WebViewController controller) {
     _webViewController = controller;
@@ -105,12 +110,19 @@ class GroupCallEmbededController extends GetxController {
     callState.value = 'left';
     currentRoomId.value = '';
     _pendingBootstrap = null;
+    isInOverlayMode.value = false;
     remoteAudioEnabled.clear();
+
+    EmbeddedCallOverlayManager().remove();
 
     await deactivateAudioSession();
 
     try {
       await FlutterCallkitIncoming.endAllCalls();
+    } catch (_) {}
+
+    try {
+      await CallService.stopService();
     } catch (_) {}
 
     await LocalStorage().setIsAnyCallActive(false);
@@ -155,6 +167,9 @@ class GroupCallEmbededController extends GetxController {
     if (isConnecting.value || isCallActive.value) {
       return;
     }
+
+    isInOverlayMode.value = false;
+    EmbeddedCallOverlayManager().remove();
 
     isConnecting.value = true;
     callState.value = 'preparing';

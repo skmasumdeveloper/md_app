@@ -5,6 +5,7 @@ import 'package:cu_app/Features/Group_Call_Embeded/controller/group_call_embeded
 import 'package:cu_app/Features/Group_Call/controller/group_call.dart';
 import 'package:cu_app/Features/GuestCall/controller/guest_call_controller.dart';
 import 'package:cu_app/services/call_service.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 /// A full-screen overlay that renders the video call content when Android
 /// system PiP is active.
@@ -50,7 +51,7 @@ class _PipVideoContent extends StatelessWidget {
           ? Get.find<GroupcallController>()
           : null;
       if (groupController != null && groupController.isCallActive.value) {
-        print("[PipFeature] Rendering Group Call PiP");
+        debugPrint("[PipFeature] Rendering Group Call PiP");
         return _buildGroupPip(groupController);
       }
 
@@ -59,7 +60,7 @@ class _PipVideoContent extends StatelessWidget {
               ? Get.find<GuestCallController>()
               : null);
       if (guestController != null && guestController.isCallActive.value) {
-        print("[PipFeature] Rendering Guest Call PiP");
+        debugPrint("[PipFeature] Rendering Guest Call PiP");
         return _buildGuestPip(guestController);
       }
 
@@ -67,14 +68,22 @@ class _PipVideoContent extends StatelessWidget {
           ? Get.find<GroupCallEmbededController>()
           : null;
       if (embeddedController != null && embeddedController.isCallActive.value) {
-        print("[PipFeature] Rendering Embedded Call PiP");
-        return _buildEmbeddedPip(embeddedController);
+        final isOnEmbeddedCallRoute =
+            Get.currentRoute.contains('GroupCallEmbededScreen');
+
+        // Keep the real embedded call route visible in PiP when it is already
+        // on top, so we render the exact same Flutter embedded call screen.
+        if (isOnEmbeddedCallRoute) {
+          return const SizedBox.shrink();
+        }
+
+        return _buildEmbeddedPipSurface(embeddedController);
       }
 
-      print("[PipFeature] No active call found for PiP");
+      debugPrint("[PipFeature] No active call found for PiP");
       return _callEndedView();
     } catch (e) {
-      print("[PipFeature] Error rendering PiP: $e");
+      debugPrint("[PipFeature] Error rendering PiP: $e");
       return _callEndedView();
     }
   }
@@ -144,48 +153,44 @@ class _PipVideoContent extends StatelessWidget {
     );
   }
 
-  Widget _buildEmbeddedPip(GroupCallEmbededController controller) {
-    final title = controller.groupModel.value.groupName ?? "Group Call";
-    final subtitle = controller.isThisVideoCall.value
-        ? "Video call in progress"
-        : "Audio call in progress";
-
-    return Container(
-      color: Colors.black,
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+  Widget _buildEmbeddedPipSurface(GroupCallEmbededController controller) {
+    final webController = controller.webViewController;
+    if (webController != null) {
+      return Container(
+        color: Colors.black,
+        child: Stack(
           children: [
-            Icon(
-              controller.isThisVideoCall.value ? Icons.videocam : Icons.call,
-              color: Colors.white,
-              size: 38,
+            Positioned.fill(
+              child: WebViewWidget(controller: webController),
             ),
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
+            Positioned(
+              top: 10,
+              left: 10,
+              right: 10,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0x99000000),
+                  borderRadius: BorderRadius.circular(10),
                 ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              subtitle,
-              style: const TextStyle(
-                color: Colors.white70,
-                fontSize: 12,
+                child: Text(
+                  controller.groupModel.value.groupName ?? 'Group Call',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ),
           ],
         ),
-      ),
-    );
+      );
+    }
+
+    return _audioCallView();
   }
 
   Widget _callEndedView() {

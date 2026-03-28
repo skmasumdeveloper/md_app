@@ -83,14 +83,22 @@
 
   function setRemoteAudioBadge(userId, enabled) {
     var badge = document.getElementById("badge-" + userId);
+    var muteIcon = document.getElementById("mute-" + userId);
+
     if (!badge) return;
 
     if (enabled === false) {
       badge.classList.add("muted");
       badge.textContent = "muted";
+      if (muteIcon) {
+        muteIcon.classList.add("show");
+      }
     } else {
       badge.classList.remove("muted");
       badge.textContent = "remote";
+      if (muteIcon) {
+        muteIcon.classList.remove("show");
+      }
     }
   }
 
@@ -331,6 +339,12 @@
       video.id = "video-" + userId;
       tile.appendChild(video);
 
+      var mute = document.createElement("div");
+      mute.id = "mute-" + userId;
+      mute.className = "mute-icon";
+      mute.innerHTML = "<span class=\"mute-icon-symbol\">🔇</span>";
+      tile.appendChild(mute);
+
       var meta = document.createElement("div");
       meta.className = "meta";
       meta.innerHTML = "<span class=\"name\" id=\"name-" + userId + "\">" +
@@ -452,6 +466,10 @@
     });
 
     state.socket.on("FE-user-join", function (users) {
+      if (Array.isArray(users) && users.length === 1 && Array.isArray(users[0])) {
+        users = users[0];
+      }
+
       if (!Array.isArray(users)) return;
 
       users.forEach(function (entry) {
@@ -521,6 +539,10 @@
     });
 
     state.socket.on("FE-toggle-camera", function (payload) {
+      if (Array.isArray(payload) && payload.length > 0) {
+        payload = payload[0];
+      }
+
       if (!payload || typeof payload !== "object") return;
 
       var switchTarget = payload.switchTarget;
@@ -539,6 +561,15 @@
 
       if (!mappedUserId && payload.userName) {
         mappedUserId = String(payload.userName);
+      }
+
+      // Some backends may emit ObjectId directly as userId.
+      if (!mappedUserId && socketUserId && state.remoteUserMeta[socketUserId]) {
+        mappedUserId = socketUserId;
+      }
+
+      if (!mappedUserId && socketUserId && document.getElementById("remote-" + socketUserId)) {
+        mappedUserId = socketUserId;
       }
 
       if (!mappedUserId || mappedUserId === state.userId) {

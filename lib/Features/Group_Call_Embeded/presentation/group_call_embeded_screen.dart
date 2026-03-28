@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:cu_app/Features/Chat/Presentation/chat_screen.dart';
 import 'package:cu_app/Features/Group_Call_Embeded/controller/group_call_embeded_controller.dart';
 import 'package:cu_app/Utils/storage_service.dart';
 import 'package:cu_app/services/call_service.dart';
+import 'package:cu_app/services/embedded_call_overlay_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -31,11 +33,13 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
     with WidgetsBindingObserver {
   late final GroupCallEmbededController _controller;
   late final WebViewController _web;
+  bool _isMovingToOverlay = false;
 
   @override
   void initState() {
     super.initState();
     _controller = Get.put(GroupCallEmbededController());
+    _controller.isInOverlayMode.value = false;
     WidgetsBinding.instance.addObserver(this);
 
     CallService.init();
@@ -47,40 +51,83 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
       );
     };
 
-    final params = PlatformWebViewControllerCreationParams();
-    _web = WebViewController.fromPlatformCreationParams(params)
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFF070B14))
-      ..addJavaScriptChannel(
-        'FlutterBridge',
-        onMessageReceived: (msg) {
-          _controller.handleJsMessage(msg.message);
-        },
-      )
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageFinished: (_) {
-            _controller.onPageReady();
+    final existingWebController = _controller.webViewController;
+    if (existingWebController != null && _controller.isCallActive.value) {
+      _web = existingWebController;
+    } else {
+      final params = PlatformWebViewControllerCreationParams();
+      _web = WebViewController.fromPlatformCreationParams(params)
+        ..setJavaScriptMode(JavaScriptMode.unrestricted)
+        ..setBackgroundColor(const Color(0xFF070B14))
+        ..addJavaScriptChannel(
+          'FlutterBridge',
+          onMessageReceived: (msg) {
+            _controller.handleJsMessage(msg.message);
           },
-        ),
-      )
-      ..loadFlutterAsset('assets/group_call_embeded/index.html');
+        )
+        ..setNavigationDelegate(
+          NavigationDelegate(
+            onPageFinished: (_) {
+              _controller.onPageReady();
+            },
+          ),
+        )
+        ..loadFlutterAsset('assets/group_call_embeded/index.html');
 
-    if (Platform.isAndroid && _web.platform is AndroidWebViewController) {
-      final androidController = _web.platform as AndroidWebViewController;
-      androidController.setMediaPlaybackRequiresUserGesture(false);
-      androidController.setOnPlatformPermissionRequest(
-        (request) {
-          request.grant();
-        },
-      );
+      if (Platform.isAndroid && _web.platform is AndroidWebViewController) {
+        final androidController = _web.platform as AndroidWebViewController;
+        androidController.setMediaPlaybackRequiresUserGesture(false);
+        androidController.setOnPlatformPermissionRequest(
+          (request) {
+            request.grant();
+          },
+        );
+      }
     }
 
     _controller.attachWebController(_web);
   }
 
+  Future<void> _enterInAppOverlay() async {
+    if (_controller.isInOverlayMode.value) {
+      return;
+    }
+
+    _controller.isInOverlayMode.value = true;
+
+    if (mounted) {
+      setState(() {
+        _isMovingToOverlay = true;
+      });
+    }
+
+    await Future.delayed(const Duration(milliseconds: 20));
+
+    EmbeddedCallOverlayManager().show(
+      roomId: widget.roomId,
+      groupName: widget.groupName.isNotEmpty ? widget.groupName : 'Group Call',
+      isVideoCall: widget.isVideoCall,
+      isMeeting: widget.isMeeting,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    if (!Get.currentRoute.contains('ChatScreen')) {
+      Get.off(() => ChatScreen(
+            groupId: widget.roomId,
+            isCallFloating: 1,
+          ));
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_controller.isInOverlayMode.value) {
+      return;
+    }
+
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
       unawaited(CallService.enterSystemPip());
@@ -90,8 +137,12 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    CallService.onEndCallRequested = null;
-    unawaited(CallService.stopService());
+
+    if (!_controller.isInOverlayMode.value) {
+      CallService.onEndCallRequested = null;
+      unawaited(CallService.stopService());
+    }
+
     super.dispose();
   }
 
@@ -99,11 +150,12 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (_, __) async {
-        await _controller.leaveCall(
-          roomId: widget.roomId,
-          userId: LocalStorage().getUserId(),
-        );
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) {
+          return;
+        }
+
+        await _enterInAppOverlay();
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF070B14),
@@ -132,7 +184,9 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
           child: Column(
             children: [
               Expanded(
-                child: WebViewWidget(controller: _web),
+                child: _isMovingToOverlay
+                    ? const ColoredBox(color: Color(0xFF070B14))
+                    : WebViewWidget(controller: _web),
               ),
               Container(
                 padding:
@@ -181,11 +235,7 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
                       onTap: () async {
                         final success = await CallService.enterSystemPip();
                         if (!success && context.mounted) {
-                          Get.snackbar(
-                            'PiP unavailable',
-                            'System PiP is not available on this device.',
-                            snackPosition: SnackPosition.BOTTOM,
-                          );
+                          await _enterInAppOverlay();
                         }
                       },
                     ),
