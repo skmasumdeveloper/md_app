@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:cu_app/Features/Group_Call_Embeded/controller/group_call_embeded_controller.dart';
@@ -27,12 +28,28 @@ class EmbeddedCallOverlayManager {
 
   bool get isOverlayActive => _overlayEntry != null;
 
+  void _log(String stage, [Map<String, dynamic>? details]) {
+    if (details == null || details.isEmpty) {
+      debugPrint('[EmbeddedCall][Overlay][$stage]');
+      return;
+    }
+    debugPrint('[EmbeddedCall][Overlay][$stage] $details');
+  }
+
   void show({
     required String roomId,
     required String groupName,
     required bool isVideoCall,
     required bool isMeeting,
   }) {
+    _log('show:start', {
+      'roomId': roomId,
+      'groupName': groupName,
+      'isVideoCall': isVideoCall,
+      'isMeeting': isMeeting,
+      'alreadyActive': _overlayEntry != null,
+    });
+
     if (_overlayEntry != null) {
       return;
     }
@@ -44,12 +61,15 @@ class EmbeddedCallOverlayManager {
 
     final context = Get.overlayContext;
     if (context == null) {
+      _log('show:skip', {'reason': 'no-overlay-context'});
       return;
     }
 
     WebViewController? webController;
     try {
-      webController = Get.find<GroupCallEmbededController>().webViewController;
+      final controller = Get.find<GroupCallEmbededController>();
+      webController = controller.webViewController;
+      unawaited(controller.setCompactMode(true, force: true));
     } catch (_) {}
 
     _overlayEntry = OverlayEntry(
@@ -60,25 +80,39 @@ class EmbeddedCallOverlayManager {
         isMeeting: isMeeting,
         webController: webController,
         onTap: restoreCall,
-        onEndCall: endCallFromOverlay,
       ),
     );
 
     Overlay.of(context).insert(_overlayEntry!);
     isFloating.value = true;
+    _log('show:inserted');
 
     CallService.setOverlayActive(true);
   }
 
   void remove() {
+    _log('remove:start', {
+      'isOverlayActive': _overlayEntry != null,
+    });
     _overlayEntry?.remove();
     _overlayEntry = null;
     isFloating.value = false;
 
+    try {
+      final controller = Get.find<GroupCallEmbededController>();
+      unawaited(controller.syncEmbeddedViewMode(force: true));
+    } catch (_) {}
+
     CallService.setOverlayActive(false);
+    _log('remove:end');
   }
 
   void restoreCall() {
+    _log('restoreCall:start', {
+      'roomId': _roomId,
+      'groupName': _groupName,
+    });
+
     final roomId = _roomId;
     if (roomId == null || roomId.isEmpty) {
       remove();
@@ -95,6 +129,7 @@ class EmbeddedCallOverlayManager {
     try {
       final controller = Get.find<GroupCallEmbededController>();
       controller.isInOverlayMode.value = false;
+      unawaited(controller.setCompactMode(false, force: true));
 
       if (Get.currentRoute.contains('GroupCallEmbededScreen')) {
         return;
@@ -106,10 +141,12 @@ class EmbeddedCallOverlayManager {
             isVideoCall: isVideoCall,
             isMeeting: isMeeting,
           ));
+      _log('restoreCall:navigate', {'roomId': roomId});
     } catch (_) {}
   }
 
   void endCallFromOverlay() {
+    _log('endCallFromOverlay:start', {'roomId': _roomId});
     final roomId = _roomId;
     remove();
 
@@ -120,10 +157,12 @@ class EmbeddedCallOverlayManager {
     try {
       final controller = Get.find<GroupCallEmbededController>();
       controller.isInOverlayMode.value = false;
+      unawaited(controller.setCompactMode(false, force: true));
       controller.leaveCall(
         roomId: roomId,
         userId: LocalStorage().getUserId(),
       );
+      _log('endCallFromOverlay:leaveCall', {'roomId': roomId});
     } catch (_) {}
   }
 }
@@ -135,7 +174,6 @@ class _EmbeddedFloatingCallWidget extends StatefulWidget {
   final bool isMeeting;
   final WebViewController? webController;
   final VoidCallback onTap;
-  final VoidCallback onEndCall;
 
   const _EmbeddedFloatingCallWidget({
     required this.roomId,
@@ -144,7 +182,6 @@ class _EmbeddedFloatingCallWidget extends StatefulWidget {
     required this.isMeeting,
     required this.webController,
     required this.onTap,
-    required this.onEndCall,
   });
 
   @override
@@ -161,13 +198,15 @@ class _EmbeddedFloatingCallWidgetState
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
+    final overlayWidth = (screenWidth * 0.46).clamp(150.0, 240.0);
+    final overlayHeight = (overlayWidth / 1.52).clamp(102.0, 168.0);
 
     if (screenWidth < 200 || screenHeight < 300) {
       return const SizedBox.shrink();
     }
 
-    final maxX = math.max(0.0, screenWidth - 170);
-    final maxY = math.max(0.0, screenHeight - 250);
+    final maxX = math.max(0.0, screenWidth - overlayWidth - 8);
+    final maxY = math.max(0.0, screenHeight - overlayHeight - 8);
     _x = _x.clamp(0.0, maxX);
     _y = _y.clamp(0.0, maxY);
 
@@ -185,13 +224,13 @@ class _EmbeddedFloatingCallWidgetState
         child: Material(
           color: Colors.transparent,
           elevation: 8,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(12),
           child: Container(
-            width: 160,
-            height: 220,
+            width: overlayWidth,
+            height: overlayHeight,
             decoration: BoxDecoration(
               color: Colors.black,
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(12),
               border: Border.all(
                 color: const Color(0xFF0EA5E9),
                 width: 2,
@@ -205,30 +244,10 @@ class _EmbeddedFloatingCallWidgetState
               ],
             ),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(10),
               child: Stack(
                 children: [
                   Positioned.fill(child: _buildPreview()),
-                  Positioned(
-                    top: 6,
-                    right: 6,
-                    child: GestureDetector(
-                      onTap: widget.onEndCall,
-                      child: Container(
-                        width: 28,
-                        height: 28,
-                        decoration: const BoxDecoration(
-                          color: Colors.red,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(
-                          Icons.call_end,
-                          size: 15,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ),
                   Positioned(
                     left: 0,
                     right: 0,
@@ -258,14 +277,14 @@ class _EmbeddedFloatingCallWidgetState
                             style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.w600,
-                              fontSize: 11,
+                              fontSize: 10,
                             ),
                           ),
                           const Text(
                             'Tap to expand',
                             style: TextStyle(
                               color: Colors.white70,
-                              fontSize: 9,
+                              fontSize: 8,
                             ),
                           ),
                         ],

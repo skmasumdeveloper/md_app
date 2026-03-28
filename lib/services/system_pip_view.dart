@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:get/get.dart';
@@ -68,14 +70,7 @@ class _PipVideoContent extends StatelessWidget {
           ? Get.find<GroupCallEmbededController>()
           : null;
       if (embeddedController != null && embeddedController.isCallActive.value) {
-        final isOnEmbeddedCallRoute =
-            Get.currentRoute.contains('GroupCallEmbededScreen');
-
-        // Keep the real embedded call route visible in PiP when it is already
-        // on top, so we render the exact same Flutter embedded call screen.
-        if (isOnEmbeddedCallRoute) {
-          return const SizedBox.shrink();
-        }
+        unawaited(embeddedController.setCompactMode(true));
 
         return _buildEmbeddedPipSurface(embeddedController);
       }
@@ -158,35 +153,7 @@ class _PipVideoContent extends StatelessWidget {
     if (webController != null) {
       return Container(
         color: Colors.black,
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: WebViewWidget(controller: webController),
-            ),
-            Positioned(
-              top: 10,
-              left: 10,
-              right: 10,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: const Color(0x99000000),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  controller.groupModel.value.groupName ?? 'Group Call',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
+        child: WebViewWidget(controller: webController),
       );
     }
 

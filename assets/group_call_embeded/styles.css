@@ -26,12 +26,29 @@ body {
   font-family: "Trebuchet MS", "Segoe UI", sans-serif;
 }
 
+body.compact-mode .topbar {
+  display: none;
+}
+
+body.compact-mode .grid {
+  height: 100%;
+  padding: 6px;
+  gap: 6px;
+}
+
+body.compact-mode .tile .meta {
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  font-size: 10px;
+}
+
 .bg {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(1200px 500px at -10% -10%, #1d4ed8 0%, transparent 55%),
-    radial-gradient(1000px 600px at 120% -20%, #0ea5e9 0%, transparent 50%),
+    radial-gradient(1200px 500px at -10% -10%, #1dd871 0%, transparent 55%),
+    radial-gradient(1000px 600px at 120% -20%, #0ee9cc 0%, transparent 50%),
     linear-gradient(135deg, var(--bg-a), var(--bg-b) 45%, var(--bg-c));
   filter: saturate(1.1);
   z-index: 0;
@@ -98,7 +115,7 @@ body {
   width: min(36vw, 220px);
   height: min(48vw, 300px);
   z-index: 6;
-  border: 2px solid rgba(14, 165, 233, 0.8);
+  border: 2px solid rgba(14, 233, 178, 0.8);
   box-shadow: 0 10px 28px rgba(2, 6, 23, 0.65);
 }
 
@@ -109,6 +126,30 @@ body {
 .grid.layout-multi {
   grid-template-columns: repeat(var(--remote-cols, 2), minmax(0, 1fr));
   grid-auto-rows: minmax(170px, 1fr);
+}
+
+.grid.layout-pip {
+  grid-template-columns: repeat(var(--pip-cols, 2), minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+}
+
+.grid.layout-pip .tile {
+  min-height: 0;
+}
+
+.grid.layout-pip .tile.local {
+  position: relative;
+  right: auto;
+  bottom: auto;
+  width: auto;
+  height: auto;
+  z-index: 2;
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+
+.tile.pip-hidden {
+  display: none !important;
 }
 
 .tile {
@@ -125,6 +166,130 @@ body {
   height: 100%;
   object-fit: cover;
   background: #000;
+}
+
+video::-webkit-media-controls,
+video::-webkit-media-controls-panel,
+video::-webkit-media-controls-start-playback-button,
+video::-webkit-media-controls-play-button {
+  display: none !important;
+  opacity: 0 !important;
+  -webkit-appearance: none;
+}
+
+.tile.local video {
+  opacity: 0.08;
+  transition: opacity 220ms ease;
+}
+
+.tile.local video.is-ready {
+  opacity: 1;
+}
+
+.local-connecting {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  background:
+    radial-gradient(
+      170px 100px at 50% 20%,
+      rgba(14, 165, 233, 0.22),
+      transparent
+    ),
+    linear-gradient(160deg, rgba(15, 23, 42, 0.82), rgba(2, 6, 23, 0.9));
+  z-index: 4;
+  text-align: center;
+  transition: opacity 220ms ease;
+}
+
+.local-connecting.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.local-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: #e0f2fe;
+  border: 1px solid rgba(56, 248, 174, 0.62);
+  background: rgba(14, 116, 144, 0.32);
+  box-shadow: 0 8px 22px rgba(2, 6, 23, 0.45);
+}
+
+.local-connecting-text {
+  font-size: 12px;
+  color: #cbd5e1;
+  letter-spacing: 0.2px;
+}
+
+.tile.remote video {
+  opacity: 0.08;
+  transition: opacity 220ms ease;
+}
+
+.tile.remote video.is-ready {
+  opacity: 1;
+}
+
+.remote-connecting {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  background:
+    radial-gradient(
+      160px 100px at 50% 20%,
+      rgba(14, 165, 233, 0.25),
+      transparent
+    ),
+    linear-gradient(160deg, rgba(15, 23, 42, 0.85), rgba(2, 6, 23, 0.9));
+  z-index: 4;
+  text-align: center;
+  transition: opacity 220ms ease;
+}
+
+.remote-connecting.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.remote-avatar {
+  width: 58px;
+  height: 58px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  font-weight: 700;
+  color: #dbeafe;
+  border: 1px solid rgba(56, 248, 174, 0.6);
+  background: rgba(14, 116, 144, 0.35);
+  box-shadow: 0 8px 24px rgba(2, 6, 23, 0.5);
+}
+
+.remote-connecting-text {
+  font-size: 12px;
+  color: #bfdbfe;
+  letter-spacing: 0.2px;
+  animation: remotePulse 1.2s ease-in-out infinite;
+}
+
+@keyframes remotePulse {
+  0%,
+  100% {
+    opacity: 0.78;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .tile .meta {
@@ -172,6 +337,24 @@ body {
 .badge.muted {
   border-color: rgba(239, 68, 68, 0.5);
   color: #fecaca;
+}
+
+.pip-overflow-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  border-radius: 999px;
+  min-width: 30px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(15, 23, 42, 0.75);
+  z-index: 10;
 }
 
 .placeholder {

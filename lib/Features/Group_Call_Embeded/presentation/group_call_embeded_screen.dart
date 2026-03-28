@@ -35,11 +35,27 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
   late final WebViewController _web;
   bool _isMovingToOverlay = false;
 
+  void _log(String stage, [Map<String, dynamic>? details]) {
+    if (details == null || details.isEmpty) {
+      debugPrint('[EmbeddedCall][Screen][$stage]');
+      return;
+    }
+    debugPrint('[EmbeddedCall][Screen][$stage] $details');
+  }
+
   @override
   void initState() {
     super.initState();
+    _log('initState', {
+      'roomId': widget.roomId,
+      'groupName': widget.groupName,
+      'isVideoCall': widget.isVideoCall,
+      'isMeeting': widget.isMeeting,
+    });
+
     _controller = Get.put(GroupCallEmbededController());
     _controller.isInOverlayMode.value = false;
+    unawaited(_controller.setCompactMode(false, force: true));
     WidgetsBinding.instance.addObserver(this);
 
     CallService.init();
@@ -53,8 +69,12 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
 
     final existingWebController = _controller.webViewController;
     if (existingWebController != null && _controller.isCallActive.value) {
+      _log('reuse-existing-webview', {
+        'isCallActive': _controller.isCallActive.value,
+      });
       _web = existingWebController;
     } else {
+      _log('create-new-webview');
       final params = PlatformWebViewControllerCreationParams();
       _web = WebViewController.fromPlatformCreationParams(params)
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
@@ -67,8 +87,27 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
         )
         ..setNavigationDelegate(
           NavigationDelegate(
+            onPageStarted: (url) {
+              _log('onPageStarted', {'url': url});
+            },
             onPageFinished: (_) {
+              _log('onPageFinished');
               _controller.onPageReady();
+            },
+            onWebResourceError: (error) {
+              _log('onWebResourceError', {
+                'errorCode': error.errorCode,
+                'description': error.description,
+                'isForMainFrame': error.isForMainFrame,
+                'errorType': error.errorType?.name ?? 'unknown',
+              });
+            },
+            onNavigationRequest: (request) {
+              _log('onNavigationRequest', {
+                'url': request.url,
+                'isMainFrame': request.isMainFrame,
+              });
+              return NavigationDecision.navigate;
             },
           ),
         )
@@ -89,11 +128,16 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
   }
 
   Future<void> _enterInAppOverlay() async {
+    _log('_enterInAppOverlay:start', {
+      'isInOverlayMode': _controller.isInOverlayMode.value,
+    });
+
     if (_controller.isInOverlayMode.value) {
       return;
     }
 
     _controller.isInOverlayMode.value = true;
+    await _controller.setCompactMode(true, force: true);
 
     if (mounted) {
       setState(() {
@@ -120,27 +164,43 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
             isCallFloating: 1,
           ));
     }
+
+    _log('_enterInAppOverlay:end');
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _log('didChangeAppLifecycleState', {
+      'state': state.name,
+      'isInOverlayMode': _controller.isInOverlayMode.value,
+    });
+
     if (_controller.isInOverlayMode.value) {
       return;
     }
 
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
+      unawaited(_controller.setCompactMode(true));
       unawaited(CallService.enterSystemPip());
+    } else if (state == AppLifecycleState.resumed) {
+      unawaited(_controller.setCompactMode(false));
     }
   }
 
   @override
   void dispose() {
+    _log('dispose', {
+      'isInOverlayMode': _controller.isInOverlayMode.value,
+      'isMovingToOverlay': _isMovingToOverlay,
+    });
+
     WidgetsBinding.instance.removeObserver(this);
 
     if (!_controller.isInOverlayMode.value) {
       CallService.onEndCallRequested = null;
       unawaited(CallService.stopService());
+      unawaited(_controller.setCompactMode(false));
     }
 
     super.dispose();
@@ -184,9 +244,16 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
           child: Column(
             children: [
               Expanded(
-                child: _isMovingToOverlay
-                    ? const ColoredBox(color: Color(0xFF070B14))
-                    : WebViewWidget(controller: _web),
+                child: Obx(() {
+                  final hideWebView =
+                      _isMovingToOverlay || CallService.isSystemPipActive.value;
+
+                  if (hideWebView) {
+                    return const ColoredBox(color: Color(0xFF070B14));
+                  }
+
+                  return WebViewWidget(controller: _web);
+                }),
               ),
               Container(
                 padding:
@@ -233,6 +300,7 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
                       icon: Icons.picture_in_picture_alt,
                       active: true,
                       onTap: () async {
+                        await _controller.setCompactMode(true);
                         final success = await CallService.enterSystemPip();
                         if (!success && context.mounted) {
                           await _enterInAppOverlay();

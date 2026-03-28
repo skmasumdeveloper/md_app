@@ -1,6 +1,7 @@
 (function () {
   var state = {
     socket: null,
+    socketUrl: "",
     roomId: "",
     userId: "",
     fullName: "",
@@ -10,6 +11,10 @@
     localStream: null,
     sendTransport: null,
     recvTransport: null,
+    sendIceParameters: null,
+    recvIceParameters: null,
+    sendConnectionState: "new",
+    recvConnectionState: "new",
     device: null,
     audioProducer: null,
     videoProducer: null,
@@ -24,23 +29,333 @@
     hasRealDevices: false,
     facingMode: "user",
     groupName: "Group Call",
+    viewMode: "normal",
+    bootstrapPayload: null,
+    isStopping: false,
+    isRecovering: false,
+    isRestartingIce: false,
+    recvIceRestartTimer: null,
+    sendIceRestartTimer: null,
+    recoveryTimer: null,
+    lastIceRestartAt: 0,
+    iceRestartWindowStart: 0,
+    iceRestartBurstCount: 0,
+    startToken: 0,
+    enableVerboseLogs: true,
+    remoteRenderReady: {},
+    localRenderReady: false,
   };
 
   var mediasoupLoaderPromise = null;
 
-  function postToFlutter(type, payload) {
-    var msg = JSON.stringify({ type: type, payload: payload || {} });
-    if (window.FlutterBridge && window.FlutterBridge.postMessage) {
-      window.FlutterBridge.postMessage(msg);
+  function safeStringify(value) {
+    try {
+      return JSON.stringify(value);
+    } catch (_) {
+      try {
+        return String(value);
+      } catch (_) {
+        return "[unserializable]";
+      }
     }
   }
 
+  function postToFlutter(type, payload) {
+    try {
+      var msg = JSON.stringify({ type: type, payload: payload || {} });
+      if (window.FlutterBridge && window.FlutterBridge.postMessage) {
+        window.FlutterBridge.postMessage(msg);
+      }
+    } catch (err) {
+      console.error("postToFlutter failed", err);
+    }
+  }
+
+  function trace(level, scope, message, details) {
+    var normalizedLevel = level || "debug";
+    var normalizedScope = scope || "general";
+    var text = "[EmbeddedCall][" + normalizedScope + "] " + message;
+
+    if (details !== undefined) {
+      if (normalizedLevel === "error") {
+        console.error(text, details);
+      } else if (normalizedLevel === "warn") {
+        console.warn(text, details);
+      } else {
+        console.log(text, details);
+      }
+    } else if (normalizedLevel === "error") {
+      console.error(text);
+    } else if (normalizedLevel === "warn") {
+      console.warn(text);
+    } else {
+      console.log(text);
+    }
+
+    if (!state.enableVerboseLogs && normalizedLevel !== "error" && normalizedLevel !== "warn") {
+      return;
+    }
+
+    postToFlutter("log", {
+      level: normalizedLevel,
+      scope: normalizedScope,
+      message: message,
+      details: details !== undefined ? safeStringify(details) : "",
+      time: new Date().toISOString(),
+    });
+  }
+
+  function setLocalPlaceholderText(text) {
+    var localPlaceholderText = document.getElementById("localPlaceholderText");
+    if (!localPlaceholderText) return;
+    localPlaceholderText.textContent = text || "Starting camera...";
+  }
+
+  function markLocalRenderReady(isReady, reason) {
+    state.localRenderReady = !!isReady;
+    trace(
+      "debug",
+      "local-video",
+      "local render readiness changed",
+      { ready: !!isReady, reason: reason || "unknown" }
+    );
+    updateLocalVisualState(state.localStream);
+  }
+
+  function markRemoteRenderReady(userId, isReady, reason) {
+    if (!userId) return;
+    state.remoteRenderReady[userId] = !!isReady;
+    trace(
+      "debug",
+      "remote-video",
+      "remote render readiness changed",
+      { userId: userId, ready: !!isReady, reason: reason || "unknown" }
+    );
+    updateRemoteVisualState(userId, state.remoteStreams[userId]);
+  }
+
+  function configureVideoElement(videoEl, options) {
+    if (!videoEl) return;
+    options = options || {};
+    var isLocal = options.isLocal === true;
+    var userId = options.userId ? String(options.userId) : "";
+
+    videoEl.autoplay = true;
+    videoEl.playsInline = true;
+    videoEl.controls = false;
+    videoEl.muted = isLocal ? true : !!options.muted;
+    videoEl.disablePictureInPicture = true;
+    videoEl.setAttribute("playsinline", "true");
+    videoEl.setAttribute("webkit-playsinline", "true");
+    videoEl.setAttribute("controlsList", "nodownload noplaybackrate noremoteplayback");
+    videoEl.removeAttribute("controls");
+
+    videoEl.onloadeddata = function () {
+      if (isLocal) {
+        markLocalRenderReady(true, "loadeddata");
+      } else {
+        markRemoteRenderReady(userId, true, "loadeddata");
+      }
+    };
+
+    videoEl.onplaying = function () {
+      if (isLocal) {
+        markLocalRenderReady(true, "playing");
+      } else {
+        markRemoteRenderReady(userId, true, "playing");
+      }
+    };
+
+    videoEl.onwaiting = function () {
+      if (isLocal) {
+        markLocalRenderReady(false, "waiting");
+      } else {
+        markRemoteRenderReady(userId, false, "waiting");
+      }
+    };
+
+    videoEl.onstalled = function () {
+      if (isLocal) {
+        markLocalRenderReady(false, "stalled");
+      } else {
+        markRemoteRenderReady(userId, false, "stalled");
+      }
+    };
+
+    videoEl.onerror = function (event) {
+      trace("warn", isLocal ? "local-video" : "remote-video", "video element error", {
+        userId: userId,
+        error: event ? safeStringify(event) : "unknown",
+      });
+
+      if (isLocal) {
+        markLocalRenderReady(false, "video-error");
+      } else {
+        markRemoteRenderReady(userId, false, "video-error");
+      }
+    };
+  }
+
+  function updateLocalVisualState(stream) {
+    var localVideo = document.getElementById("localVideo");
+    var localPlaceholder = document.getElementById("localPlaceholder");
+    if (!localVideo || !localPlaceholder) {
+      return;
+    }
+
+    var hasVideoTrack = false;
+    if (stream && typeof stream.getVideoTracks === "function") {
+      hasVideoTrack = stream.getVideoTracks().some(function (track) {
+        return track && track.readyState !== "ended";
+      });
+    }
+
+    var showVideo = hasVideoTrack && state.localRenderReady === true;
+    localVideo.classList.toggle("is-ready", showVideo);
+
+    if (showVideo) {
+      localPlaceholder.classList.add("hidden");
+      return;
+    }
+
+    localPlaceholder.classList.remove("hidden");
+
+    if (!hasVideoTrack) {
+      setLocalPlaceholderText(state.callType === "audio" ? "Audio call" : "Camera unavailable");
+    }
+  }
+   
   function setStatus(text, sub) {
     $("#statusPill").text(text);
     if (sub) {
       $("#subTitle").text(sub);
     }
+    trace("debug", "state", "status updated", { state: text, subtitle: sub || "" });
     postToFlutter("state", { state: text });
+  }
+
+  function normalizeTransportState(rawState) {
+    if (!rawState) return "unknown";
+    if (typeof rawState === "string") return rawState;
+    if (typeof rawState === "object") {
+      if (typeof rawState.connectionState === "string") {
+        return rawState.connectionState;
+      }
+      if (typeof rawState.state === "string") {
+        return rawState.state;
+      }
+    }
+    return "unknown";
+  }
+
+  function clearTimer(key) {
+    var timer = state[key];
+    if (timer) {
+      clearTimeout(timer);
+      state[key] = null;
+    }
+  }
+
+  function clearRecoveryTimers() {
+    clearTimer("recvIceRestartTimer");
+    clearTimer("sendIceRestartTimer");
+    clearTimer("recoveryTimer");
+  }
+
+  function getInitials(name) {
+    var text = String(name || "User").trim();
+    if (!text) return "U";
+
+    var words = text.split(/\s+/).filter(Boolean);
+    if (words.length === 1) {
+      return words[0].slice(0, 2).toUpperCase();
+    }
+
+    return (words[0][0] + words[1][0]).toUpperCase();
+  }
+
+  function setViewMode(mode) {
+    var normalized = mode === "pip" ? "pip" : "normal";
+    state.viewMode = normalized;
+
+    var isCompact = normalized === "pip";
+    document.body.classList.toggle("compact-mode", isCompact);
+    trace("debug", "ui", "view mode changed", { mode: normalized });
+    updateGridLayout();
+  }
+
+  function setPipOverflowBadge(extraCount) {
+    var localTile = document.querySelector(".tile.local");
+    if (!localTile) {
+      return;
+    }
+
+    var badge = document.getElementById("pipOverflowBadge");
+    if (extraCount > 0 && state.viewMode === "pip") {
+      if (!badge) {
+        badge = document.createElement("div");
+        badge.id = "pipOverflowBadge";
+        badge.className = "pip-overflow-badge";
+        localTile.appendChild(badge);
+      }
+      badge.textContent = "+" + extraCount;
+      return;
+    }
+
+    if (badge) {
+      badge.remove();
+    }
+  }
+
+  function updateRemotePlaceholderText(userId) {
+    var placeholder = document.getElementById("placeholder-" + userId);
+    if (!placeholder) return;
+
+    var meta = state.remoteUserMeta[userId] || {};
+    var textEl = placeholder.querySelector(".remote-connecting-text");
+    if (!textEl) return;
+
+    if (meta.video === false) {
+      textEl.textContent = "Camera is off";
+      return;
+    }
+
+    if (meta.audio === false) {
+      textEl.textContent = "Muted";
+      return;
+    }
+
+    textEl.textContent = "Connecting...";
+  }
+
+  function updateRemoteVisualState(userId, stream) {
+    var placeholder = document.getElementById("placeholder-" + userId);
+    var videoEl = document.getElementById("video-" + userId);
+
+    var hasVideo = false;
+    if (stream && typeof stream.getVideoTracks === "function") {
+      hasVideo = stream.getVideoTracks().some(function (track) {
+        return track && track.readyState !== "ended";
+      });
+    }
+
+    var showVideo = hasVideo && state.remoteRenderReady[userId] === true;
+
+    if (placeholder) {
+      if (showVideo) {
+        placeholder.classList.add("hidden");
+      } else {
+        placeholder.classList.remove("hidden");
+      }
+    }
+
+    if (videoEl) {
+      videoEl.classList.toggle("is-ready", showVideo);
+    }
+
+    if (!showVideo) {
+      updateRemotePlaceholderText(userId);
+    }
   }
 
   function escapeHtml(value) {
@@ -112,23 +427,43 @@
     if (typeof meta.audio === "boolean") {
       setRemoteAudioBadge(userId, meta.audio);
     }
+
+    updateRemotePlaceholderText(userId);
   }
 
   function updateGridLayout() {
     var grid = document.getElementById("grid");
     if (!grid) return;
 
-    var remoteTiles = Array.from(
-      grid.querySelectorAll(".tile[id^='remote-']")
-    );
+    var remoteTiles = Array.from(grid.querySelectorAll(".tile[id^='remote-']"));
 
     remoteTiles.forEach(function (tile) {
       tile.classList.remove("primary-remote");
+      tile.classList.remove("pip-hidden");
     });
 
-    grid.classList.remove("layout-single", "layout-dual", "layout-multi");
+    grid.classList.remove("layout-single", "layout-dual", "layout-multi", "layout-pip");
 
-    var remoteCount = remoteTiles.length;
+    var visibleRemoteTiles = remoteTiles;
+    if (state.viewMode === "pip" && remoteTiles.length > 3) {
+      visibleRemoteTiles = remoteTiles.slice(0, 3);
+      remoteTiles.slice(3).forEach(function (tile) {
+        tile.classList.add("pip-hidden");
+      });
+    }
+
+    if (state.viewMode === "pip") {
+      var visibleCount = visibleRemoteTiles.length + 1;
+      grid.classList.add("layout-pip");
+      grid.style.setProperty("--pip-cols", String(visibleCount <= 1 ? 1 : 2));
+      grid.style.removeProperty("--remote-cols");
+      setPipOverflowBadge(Math.max(0, remoteTiles.length - visibleRemoteTiles.length));
+      return;
+    }
+
+    setPipOverflowBadge(0);
+
+    var remoteCount = visibleRemoteTiles.length;
     if (remoteCount === 0) {
       grid.classList.add("layout-single");
       grid.style.removeProperty("--remote-cols");
@@ -137,7 +472,7 @@
 
     if (remoteCount === 1) {
       grid.classList.add("layout-dual");
-      remoteTiles[0].classList.add("primary-remote");
+      visibleRemoteTiles[0].classList.add("primary-remote");
       grid.style.removeProperty("--remote-cols");
       return;
     }
@@ -157,6 +492,7 @@
 
   function loadMediasoupClient() {
     if (ensureMediasoupDeviceCtor()) {
+      trace("debug", "mediasoup", "mediasoup client already loaded");
       return Promise.resolve();
     }
 
@@ -173,16 +509,23 @@
     mediasoupLoaderPromise = (async function () {
       for (var i = 0; i < urls.length; i += 1) {
         var url = urls[i];
+        trace("debug", "mediasoup", "loading mediasoup client", { url: url });
         try {
           var mod = await import(url);
           if (mod) {
             window.mediasoupClient = mod;
             if (ensureMediasoupDeviceCtor()) {
+              trace("debug", "mediasoup", "mediasoup client loaded", { url: url });
               window.dispatchEvent(new Event("mediasoup-ready"));
               return;
             }
           }
-        } catch (_) {}
+        } catch (err) {
+          trace("warn", "mediasoup", "mediasoup import failed", {
+            url: url,
+            error: err && err.message ? err.message : String(err),
+          });
+        }
       }
 
       throw new Error("mediasoup-load-failed");
@@ -193,8 +536,10 @@
 
   function waitForMediasoupReady(timeoutMs) {
     timeoutMs = timeoutMs || 12000;
+    trace("debug", "mediasoup", "waiting for mediasoup", { timeoutMs: timeoutMs });
     return new Promise(function (resolve, reject) {
       if (ensureMediasoupDeviceCtor()) {
+        trace("debug", "mediasoup", "mediasoup already ready");
         resolve();
         return;
       }
@@ -203,6 +548,7 @@
       var t = setTimeout(function () {
         if (!done) {
           done = true;
+          trace("error", "mediasoup", "mediasoup load timeout", { timeoutMs: timeoutMs });
           reject(new Error("mediasoup-load-timeout"));
         }
       }, timeoutMs);
@@ -212,6 +558,7 @@
         done = true;
         clearTimeout(t);
         window.removeEventListener("mediasoup-ready", onReady);
+        trace("debug", "mediasoup", "mediasoup ready event received");
         resolve();
       }
 
@@ -222,6 +569,9 @@
           done = true;
           clearTimeout(t);
           window.removeEventListener("mediasoup-ready", onReady);
+          trace("error", "mediasoup", "mediasoup loading failed", {
+            error: err && err.message ? err.message : String(err),
+          });
           reject(err);
         }
       });
@@ -230,6 +580,7 @@
 
   function createDummyStream(wantsVideo) {
     var stream = new MediaStream();
+    trace("warn", "media", "using dummy stream", { wantsVideo: !!wantsVideo });
 
     try {
       var AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -278,8 +629,18 @@
   function emitAck(eventName, payload, timeoutMs, options) {
     timeoutMs = timeoutMs || 15000;
     options = options || {};
+    trace("debug", "socket-ack", "emitAck start", {
+      eventName: eventName,
+      timeoutMs: timeoutMs,
+      noPayload: options.noPayload === true,
+      payload: payload,
+    });
+
     return new Promise(function (resolve, reject) {
       if (!state.socket) {
+        trace("error", "socket-ack", "emitAck socket not ready", {
+          eventName: eventName,
+        });
         reject(new Error("socket-not-ready"));
         return;
       }
@@ -288,6 +649,9 @@
       var t = setTimeout(function () {
         if (!done) {
           done = true;
+          trace("error", "socket-ack", "emitAck timeout", {
+            eventName: eventName,
+          });
           reject(new Error(eventName + " timeout"));
         }
       }, timeoutMs);
@@ -297,6 +661,10 @@
           if (done) return;
           done = true;
           clearTimeout(t);
+          trace("debug", "socket-ack", "emitAck response", {
+            eventName: eventName,
+            response: res,
+          });
           resolve(res);
         };
 
@@ -311,6 +679,10 @@
         if (!done) {
           done = true;
           clearTimeout(t);
+          trace("error", "socket-ack", "emitAck exception", {
+            eventName: eventName,
+            error: err && err.message ? err.message : String(err),
+          });
           reject(err);
         }
       }
@@ -337,7 +709,18 @@
       video.autoplay = true;
       video.playsInline = true;
       video.id = "video-" + userId;
+      configureVideoElement(video, { userId: userId, isLocal: false, muted: false });
       tile.appendChild(video);
+
+      var placeholder = document.createElement("div");
+      placeholder.id = "placeholder-" + userId;
+      placeholder.className = "remote-connecting";
+      placeholder.innerHTML =
+        "<div class=\"remote-avatar\">" +
+        escapeHtml(getInitials(getDisplayName(userId))) +
+        "</div>" +
+        "<div class=\"remote-connecting-text\">Connecting...</div>";
+      tile.appendChild(placeholder);
 
       var mute = document.createElement("div");
       mute.id = "mute-" + userId;
@@ -358,9 +741,20 @@
 
     var videoEl = document.getElementById("video-" + userId);
     if (videoEl && stream) {
+      configureVideoElement(videoEl, { userId: userId, isLocal: false, muted: false });
+      if (kind === "video" || videoEl.srcObject !== stream) {
+        state.remoteRenderReady[userId] = false;
+      }
       videoEl.srcObject = stream;
-      videoEl.play().catch(function () {});
+      videoEl.play().catch(function (err) {
+        trace("warn", "remote-video", "video play() rejected", {
+          userId: userId,
+          error: err && err.message ? err.message : String(err),
+        });
+      });
     }
+
+    updateRemoteVisualState(userId, stream);
 
     if (kind === "audio") {
       var audioEnabled = stream.getAudioTracks().some(function (track) {
@@ -374,6 +768,8 @@
         userId: userId,
         enabled: audioEnabled,
       });
+
+      updateRemotePlaceholderText(userId);
     }
 
     updateRemoteTileMeta(userId);
@@ -383,6 +779,10 @@
   async function initializeMedia() {
     var wantsVideo = state.callType === "video";
     state.hasRealDevices = false;
+    trace("debug", "media", "initializeMedia start", {
+      wantsVideo: wantsVideo,
+      facingMode: state.facingMode,
+    });
     setStatus("media_init", "Requesting microphone/camera...");
 
     var constraints = {
@@ -428,8 +828,15 @@
     }
 
     var localVideo = document.getElementById("localVideo");
+    configureVideoElement(localVideo, { isLocal: true, userId: state.userId, muted: true });
+    state.localRenderReady = false;
+    setLocalPlaceholderText(wantsVideo ? "Starting camera..." : "Audio call");
     localVideo.srcObject = state.localStream;
-    localVideo.play().catch(function () {});
+    localVideo.play().catch(function (err) {
+      trace("warn", "local-video", "local play() rejected", {
+        error: err && err.message ? err.message : String(err),
+      });
+    });
 
     state.isCameraEnabled = state.localStream.getVideoTracks().length > 0;
     state.isMicEnabled = state.localStream.getAudioTracks().length > 0;
@@ -439,11 +846,397 @@
       setStatus("media_fallback", "Using fallback media stream (camera/mic unavailable).");
     }
 
+    updateLocalVisualState(state.localStream);
+    trace("debug", "media", "initializeMedia complete", {
+      hasRealDevices: state.hasRealDevices,
+      audioTracks: state.localStream.getAudioTracks().length,
+      videoTracks: state.localStream.getVideoTracks().length,
+    });
+
     postToFlutter("mic", { enabled: state.isMicEnabled });
     postToFlutter("camera", { enabled: state.isCameraEnabled });
   }
 
+  function forceReattachRemoteVideos() {
+    Object.keys(state.remoteStreams).forEach(function (userId) {
+      var stream = state.remoteStreams[userId];
+      var videoEl = document.getElementById("video-" + userId);
+      if (!videoEl || !stream) {
+        return;
+      }
+
+      state.remoteRenderReady[userId] = false;
+      updateRemoteVisualState(userId, stream);
+
+      try {
+        videoEl.srcObject = null;
+      } catch (_) {}
+
+      setTimeout(function () {
+        try {
+          configureVideoElement(videoEl, { userId: userId, isLocal: false, muted: false });
+          videoEl.srcObject = stream;
+          videoEl.play().catch(function (err) {
+            trace("warn", "remote-video", "re-attach play() rejected", {
+              userId: userId,
+              error: err && err.message ? err.message : String(err),
+            });
+          });
+        } catch (_) {}
+        updateRemoteVisualState(userId, stream);
+      }, 80);
+    });
+  }
+
+  function scheduleFullRecover(reason, delayMs) {
+    if (state.isStopping) {
+      return;
+    }
+
+    if (!state.bootstrapPayload || !state.bootstrapPayload.socketUrl) {
+      return;
+    }
+
+    clearTimer("recoveryTimer");
+    trace("warn", "recover", "scheduling full recover", {
+      reason: reason,
+      delayMs: delayMs || 1200,
+    });
+    state.recoveryTimer = setTimeout(function () {
+      recoverCall(reason).catch(function (err) {
+        console.error("recoverCall failed", err);
+      });
+    }, Math.max(0, delayMs || 1200));
+  }
+
+  function scheduleIceRestart(target, delayMs) {
+    if (state.isStopping || state.isRecovering || state.isRestartingIce) {
+      return;
+    }
+
+    var key = target === "send" ? "sendIceRestartTimer" : "recvIceRestartTimer";
+    clearTimer(key);
+    trace("warn", "ice", "scheduling ICE restart", {
+      target: target,
+      delayMs: delayMs || 1000,
+    });
+    state[key] = setTimeout(function () {
+      attemptIceRestart(target).catch(function (err) {
+        console.error("attemptIceRestart failed", err);
+      });
+    }, Math.max(0, delayMs || 1000));
+  }
+
+  async function restartTransportIceWithServer(direction, transport) {
+    if (!transport || !transport.id) {
+      return false;
+    }
+
+    if (!state.socket || state.socket.connected !== true) {
+      return false;
+    }
+
+    try {
+      trace("warn", "ice", "requesting transport ICE restart", {
+        direction: direction,
+        transportId: transport.id,
+      });
+      var response = await emitAck("MS-restart-ice", {
+        roomId: state.roomId,
+        userId: state.userId,
+        transportId: transport.id,
+      }, 8000);
+
+      var iceParameters =
+        response && response.ok === true && response.iceParameters
+          ? response.iceParameters
+          : null;
+
+      if (!iceParameters) {
+        iceParameters = direction === "recv"
+          ? state.recvIceParameters
+          : state.sendIceParameters;
+      }
+
+      if (!iceParameters) {
+        return false;
+      }
+
+      if (direction === "recv") {
+        state.recvIceParameters = iceParameters;
+      } else {
+        state.sendIceParameters = iceParameters;
+      }
+
+      await transport.restartIce({ iceParameters: iceParameters });
+      trace("debug", "ice", "transport ICE restart applied", {
+        direction: direction,
+        transportId: transport.id,
+      });
+      return true;
+    } catch (err) {
+      trace("error", "ice", "transport ICE restart error", {
+        direction: direction,
+        transportId: transport.id,
+        error: err && err.message ? err.message : String(err),
+      });
+      console.error(direction + " ICE restart error", err);
+      return false;
+    }
+  }
+
+  async function recoverRemoteConsumers() {
+    trace("warn", "recover", "rebuilding remote consumers");
+    if (!state.recvTransport || !state.socket || state.socket.connected !== true) {
+      return;
+    }
+
+    Object.keys(state.consumers).forEach(function (consumerId) {
+      try {
+        state.consumers[consumerId].close();
+      } catch (_) {}
+    });
+
+    state.consumers = {};
+    state.consumedProducerIds = {};
+
+    Object.keys(state.remoteStreams).forEach(function (userId) {
+      var stream = state.remoteStreams[userId];
+      if (!stream) return;
+
+      stream.getAudioTracks().forEach(function (track) {
+        try {
+          stream.removeTrack(track);
+        } catch (_) {}
+      });
+
+      stream.getVideoTracks().forEach(function (track) {
+        try {
+          stream.removeTrack(track);
+        } catch (_) {}
+      });
+
+      updateRemoteVisualState(userId, stream);
+    });
+
+    var producersRes = await emitAck("MS-get-producers", {
+      roomId: state.roomId,
+      userId: state.userId,
+    });
+
+    var producers = producersRes && producersRes.ok && producersRes.producers
+      ? producersRes.producers
+      : [];
+
+    trace("debug", "recover", "remote producers snapshot", {
+      producerCount: producers.length,
+    });
+
+    for (var i = 0; i < producers.length; i += 1) {
+      var producer = producers[i];
+      if (!producer) continue;
+      if (String(producer.userId || "") === state.userId) {
+        continue;
+      }
+
+      await consumeProducer(producer.producerId, producer.userId, producer.kind);
+    }
+
+    forceReattachRemoteVideos();
+  }
+
+  async function attemptIceRestart(target) {
+    trace("warn", "ice", "attempting ICE restart", {
+      target: target,
+      recvState: state.recvConnectionState,
+      sendState: state.sendConnectionState,
+    });
+    if (state.isStopping || state.isRecovering || state.isRestartingIce) {
+      return;
+    }
+
+    if (!state.roomId || !state.userId || !state.socket || state.socket.connected !== true) {
+      scheduleFullRecover("ice-restart-no-socket", 900);
+      return;
+    }
+
+    clearTimer("recvIceRestartTimer");
+    clearTimer("sendIceRestartTimer");
+
+    var now = Date.now();
+    if (state.lastIceRestartAt && now - state.lastIceRestartAt < 4000) {
+      trace("debug", "ice", "ICE restart skipped due cooldown", {
+        elapsedMs: now - state.lastIceRestartAt,
+      });
+      return;
+    }
+    state.lastIceRestartAt = now;
+
+    if (!state.iceRestartWindowStart || now - state.iceRestartWindowStart > 20000) {
+      state.iceRestartWindowStart = now;
+      state.iceRestartBurstCount = 0;
+    }
+    state.iceRestartBurstCount += 1;
+
+    if (state.iceRestartBurstCount >= 5) {
+      trace("error", "ice", "ICE restart burst threshold reached", {
+        burstCount: state.iceRestartBurstCount,
+      });
+      state.iceRestartBurstCount = 0;
+      state.iceRestartWindowStart = 0;
+      scheduleFullRecover("ice-flapping", 300);
+      return;
+    }
+
+    var shouldRestartRecv = target === "recv" || target === "both";
+    var shouldRestartSend = target === "send" || target === "both";
+
+    if (shouldRestartRecv && !state.recvTransport) {
+      shouldRestartRecv = false;
+    }
+    if (shouldRestartSend && !state.sendTransport) {
+      shouldRestartSend = false;
+    }
+
+    if (!shouldRestartRecv && !shouldRestartSend) {
+      scheduleFullRecover("ice-missing-transports", 200);
+      return;
+    }
+
+    state.isRestartingIce = true;
+    setStatus("ice_recovering", "Reconnecting media...");
+
+    try {
+      var recvRestarted = false;
+      var sendRestarted = false;
+
+      if (shouldRestartRecv && state.recvTransport) {
+        recvRestarted = await restartTransportIceWithServer("recv", state.recvTransport);
+      }
+
+      if (shouldRestartSend && state.sendTransport) {
+        sendRestarted = await restartTransportIceWithServer("send", state.sendTransport);
+      }
+
+      if (!recvRestarted && !sendRestarted) {
+        trace("error", "ice", "ICE restart failed for both transports");
+        scheduleFullRecover("ice-restart-failed", 500);
+        return;
+      }
+
+      await new Promise(function (resolve) {
+        setTimeout(resolve, 250);
+      });
+
+      if (recvRestarted) {
+        await recoverRemoteConsumers();
+      }
+
+      forceReattachRemoteVideos();
+      setStatus("in_call", "Connected with mediasoup SFU.");
+      trace("debug", "ice", "ICE restart flow completed", {
+        recvRestarted: recvRestarted,
+        sendRestarted: sendRestarted,
+      });
+    } finally {
+      state.isRestartingIce = false;
+    }
+  }
+
+  function onSendTransportStateChanged(rawState) {
+    var nextState = normalizeTransportState(rawState);
+    trace("debug", "transport-send", "connection state changed", {
+      previous: state.sendConnectionState,
+      next: nextState,
+    });
+    state.sendConnectionState = nextState;
+
+    if (nextState === "connected") {
+      clearTimer("sendIceRestartTimer");
+      state.iceRestartBurstCount = 0;
+      state.iceRestartWindowStart = 0;
+      return;
+    }
+
+    if (nextState === "failed") {
+      scheduleIceRestart("both", 1000);
+      return;
+    }
+
+    if (nextState === "disconnected") {
+      scheduleIceRestart("both", 8000);
+    }
+  }
+
+  function onRecvTransportStateChanged(rawState) {
+    var previousState = state.recvConnectionState;
+    var nextState = normalizeTransportState(rawState);
+    trace("debug", "transport-recv", "connection state changed", {
+      previous: previousState,
+      next: nextState,
+    });
+    state.recvConnectionState = nextState;
+
+    if (nextState === "connected") {
+      clearTimer("recvIceRestartTimer");
+      state.iceRestartBurstCount = 0;
+      state.iceRestartWindowStart = 0;
+
+      if (previousState === "disconnected" || previousState === "failed") {
+        recoverRemoteConsumers().catch(function (err) {
+          console.error("recoverRemoteConsumers failed", err);
+        });
+      } else {
+        forceReattachRemoteVideos();
+      }
+      return;
+    }
+
+    if (nextState === "failed") {
+      scheduleIceRestart("both", 1000);
+      return;
+    }
+
+    if (nextState === "disconnected") {
+      scheduleIceRestart("both", 8000);
+    }
+  }
+
+  async function recoverCall(reason) {
+    trace("warn", "recover", "recover call start", { reason: reason || "unknown" });
+    if (state.isRecovering || state.isStopping) {
+      return;
+    }
+
+    if (!state.bootstrapPayload || !state.bootstrapPayload.socketUrl) {
+      return;
+    }
+
+    state.isRecovering = true;
+
+    try {
+      setStatus("reconnecting", "Connection unstable, recovering call...");
+      await startCall(Object.assign({}, state.bootstrapPayload), {
+        skipCleanup: false,
+        isRecovery: true,
+        reason: reason || "unknown",
+      });
+    } catch (err) {
+      trace("error", "recover", "recover call exception", {
+        reason: reason || "unknown",
+        error: err && err.message ? err.message : String(err),
+      });
+      console.error("recoverCall exception", err);
+      setStatus("reconnect_retry", "Retrying call connection...");
+      scheduleFullRecover("retry-" + String(reason || "unknown"), 2200);
+    } finally {
+      state.isRecovering = false;
+      trace("debug", "recover", "recover call end", { reason: reason || "unknown" });
+    }
+  }
+
   async function connectSocket(socketUrl) {
+    trace("debug", "socket", "connecting socket", { socketUrl: socketUrl });
     if (state.socket) {
       try {
         state.socket.disconnect();
@@ -454,18 +1247,64 @@
     state.socket = io(socketUrl, {
       transports: ["websocket"],
       reconnection: true,
-      reconnectionAttempts: 12,
-      reconnectionDelay: 1200,
+      reconnectionAttempts: 40,
+      reconnectionDelay: 900,
+      reconnectionDelayMax: 5000,
+      randomizationFactor: 0.35,
       timeout: 20000,
+      forceNew: true,
+    });
+
+    trace("debug", "socket", "socket object created", {
+      opts: {
+        reconnectionAttempts: 40,
+        reconnectionDelay: 900,
+        reconnectionDelayMax: 5000,
+        timeout: 20000,
+      },
     });
 
     state.socket.on("connect", function () {
+      clearRecoveryTimers();
       setStatus("socket_connected", "Socket connected. Joining call room...");
+      trace("debug", "socket", "socket connected", { socketId: state.socket.id });
       postToFlutter("connected", { socketId: state.socket.id });
       state.socket.emit("joinSelf", state.userId);
     });
 
+    state.socket.on("reconnect", function () {
+      clearRecoveryTimers();
+      setStatus("socket_reconnected", "Reconnected. Restoring media...");
+      scheduleFullRecover("socket-reconnect", 350);
+    });
+
+    state.socket.on("disconnect", function (reason) {
+      trace("warn", "socket", "socket disconnected", { reason: reason });
+      if (state.isStopping) {
+        return;
+      }
+
+      setStatus("socket_disconnected", "Connection lost. Reconnecting...");
+      if (reason !== "io client disconnect") {
+        scheduleFullRecover("socket-disconnect", 1200);
+      }
+    });
+
+    state.socket.on("connect_error", function () {
+      trace("warn", "socket", "socket connect_error");
+      if (state.isStopping) {
+        return;
+      }
+
+      setStatus("socket_error", "Network issue. Reconnecting...");
+      scheduleFullRecover("socket-connect-error", 1700);
+    });
+
     state.socket.on("FE-user-join", function (users) {
+      trace("debug", "socket", "FE-user-join received", {
+        isArray: Array.isArray(users),
+        length: Array.isArray(users) ? users.length : -1,
+      });
       if (Array.isArray(users) && users.length === 1 && Array.isArray(users[0])) {
         users = users[0];
       }
@@ -519,6 +1358,7 @@
     });
 
     state.socket.on("MS-new-producer", async function (payload) {
+      trace("debug", "mediasoup", "MS-new-producer received", payload);
       try {
         if (!payload || !payload.producerId) return;
         if (state.consumedProducerIds[payload.producerId]) return;
@@ -529,16 +1369,19 @@
     });
 
     state.socket.on("FE-user-leave", function (payload) {
+      trace("debug", "socket", "FE-user-leave received", payload);
       var userName = payload && payload.userName;
       if (!userName) return;
       delete state.remoteStreams[userName];
       delete state.remoteUserMeta[userName];
+      delete state.remoteRenderReady[userName];
       var tile = document.getElementById("remote-" + userName);
       if (tile) tile.remove();
       updateGridLayout();
     });
 
     state.socket.on("FE-toggle-camera", function (payload) {
+      trace("debug", "socket", "FE-toggle-camera received", payload);
       if (Array.isArray(payload) && payload.length > 0) {
         payload = payload[0];
       }
@@ -546,7 +1389,7 @@
       if (!payload || typeof payload !== "object") return;
 
       var switchTarget = payload.switchTarget;
-      if (switchTarget !== "audio") return;
+      if (switchTarget !== "audio" && switchTarget !== "video") return;
 
       var socketUserId = payload.userId ? String(payload.userId) : "";
       var mappedUserId = "";
@@ -580,22 +1423,35 @@
       var enabled;
       if (typeof payload.isEnabled === "boolean") {
         enabled = payload.isEnabled;
-      } else if (typeof payload.audio === "boolean") {
+      } else if (switchTarget === "audio" && typeof payload.audio === "boolean") {
         enabled = payload.audio;
+      } else if (switchTarget === "video" && typeof payload.video === "boolean") {
+        enabled = payload.video;
       } else if (typeof payload.enabled === "boolean") {
         enabled = payload.enabled;
       } else {
-        enabled = meta.audio === false;
+        enabled = switchTarget === "audio"
+          ? meta.audio === false
+          : meta.video === false;
       }
 
-      meta.audio = enabled;
+      if (switchTarget === "audio") {
+        meta.audio = enabled;
+      } else {
+        meta.video = enabled;
+      }
       state.remoteUserMeta[mappedUserId] = meta;
 
-      setRemoteAudioBadge(mappedUserId, enabled);
-      postToFlutter("remote_audio", {
-        userId: mappedUserId,
-        enabled: enabled,
-      });
+      if (switchTarget === "audio") {
+        setRemoteAudioBadge(mappedUserId, enabled);
+        postToFlutter("remote_audio", {
+          userId: mappedUserId,
+          enabled: enabled,
+        });
+      }
+
+      updateRemotePlaceholderText(mappedUserId);
+      updateRemoteVisualState(mappedUserId, state.remoteStreams[mappedUserId]);
     });
 
     state.socket.on("FE-call-ended", function () {
@@ -604,6 +1460,11 @@
   }
 
   async function joinRoomAndMediasoup() {
+    trace("debug", "mediasoup", "joinRoomAndMediasoup start", {
+      roomId: state.roomId,
+      userId: state.userId,
+      callType: state.callType,
+    });
     setStatus("joining", "Joining room and preparing SFU transports...");
 
     await emitAck(state.joinEvent, {
@@ -628,6 +1489,10 @@
 
     state.device = new DeviceCtor();
     await state.device.load({ routerRtpCapabilities: rtpCapsRes.rtpCapabilities });
+    trace("debug", "mediasoup", "device loaded", {
+      canProduceAudio: state.device.canProduce("audio"),
+      canProduceVideo: state.device.canProduce("video"),
+    });
 
     var iceCfg = await emitAck("MS-get-ice-servers", null, 15000, {
       noPayload: true,
@@ -644,6 +1509,9 @@
     if (!sendInfo || !sendInfo.ok) {
       throw new Error("create-send-transport-failed");
     }
+
+    state.sendIceParameters = sendInfo.iceParameters || null;
+    state.sendConnectionState = "new";
 
     state.sendTransport = state.device.createSendTransport({
       id: sendInfo.id,
@@ -679,6 +1547,14 @@
       }).catch(errback);
     });
 
+    state.sendTransport.on("connectionstatechange", function (connectionState) {
+      onSendTransportStateChanged(connectionState);
+    });
+
+    trace("debug", "mediasoup", "send transport created", {
+      transportId: sendInfo.id,
+    });
+
     var recvInfo = await emitAck("MS-create-transport", {
       roomId: state.roomId,
       userId: state.userId,
@@ -688,6 +1564,9 @@
     if (!recvInfo || !recvInfo.ok) {
       throw new Error("create-recv-transport-failed");
     }
+
+    state.recvIceParameters = recvInfo.iceParameters || null;
+    state.recvConnectionState = "new";
 
     state.recvTransport = state.device.createRecvTransport({
       id: recvInfo.id,
@@ -710,10 +1589,21 @@
       }).catch(errback);
     });
 
+    state.recvTransport.on("connectionstatechange", function (connectionState) {
+      onRecvTransportStateChanged(connectionState);
+    });
+
+    trace("debug", "mediasoup", "recv transport created", {
+      transportId: recvInfo.id,
+    });
+
     // Produce local tracks
     var audioTrack = state.localStream.getAudioTracks()[0];
     if (audioTrack) {
       state.audioProducer = await state.sendTransport.produce({ track: audioTrack });
+      trace("debug", "mediasoup", "audio producer created", {
+        producerId: state.audioProducer && state.audioProducer.id,
+      });
     }
 
     if (state.callType === "video") {
@@ -728,6 +1618,9 @@
               scalabilityMode: "L1T1",
             },
           ],
+        });
+        trace("debug", "mediasoup", "video producer created", {
+          producerId: state.videoProducer && state.videoProducer.id,
         });
       }
     }
@@ -744,10 +1637,18 @@
       await consumeProducer(p.producerId, p.userId, p.kind);
     }
 
+    trace("debug", "mediasoup", "joinRoomAndMediasoup complete", {
+      existingProducerCount: producers.length,
+    });
     setStatus("in_call", "Connected with mediasoup SFU.");
   }
 
   async function consumeProducer(producerId, remoteUserId, kindHint) {
+    trace("debug", "mediasoup", "consumeProducer start", {
+      producerId: producerId,
+      remoteUserId: remoteUserId,
+      kindHint: kindHint,
+    });
     if (!producerId || state.consumedProducerIds[producerId]) return;
     state.consumedProducerIds[producerId] = true;
 
@@ -771,7 +1672,18 @@
         paused: consumeRes.paused !== false,
       });
 
+      if (consumer && consumer.track) {
+        consumer.track.onended = function () {
+          scheduleIceRestart("both", 500);
+        };
+      }
+
       state.consumers[consumer.id] = consumer;
+      trace("debug", "mediasoup", "consumer created", {
+        consumerId: consumer.id,
+        producerId: consumeRes.producerId,
+        kind: consumeRes.kind,
+      });
 
       var userId = String(remoteUserId || "unknown");
       var stream = state.remoteStreams[userId];
@@ -783,6 +1695,15 @@
       var kind = consumeRes.kind || kindHint || consumer.kind;
       removeTracksOfKind(stream, kind);
       stream.addTrack(consumer.track);
+
+      var meta = state.remoteUserMeta[userId] || {};
+      if (kind === "video") {
+        meta.video = true;
+      }
+      if (kind === "audio") {
+        meta.audio = true;
+      }
+      state.remoteUserMeta[userId] = meta;
 
       var displayStream = new MediaStream(stream.getTracks());
       state.remoteStreams[userId] = displayStream;
@@ -803,13 +1724,99 @@
           temporalLayer: 0,
         });
       }
+
+      trace("debug", "mediasoup", "consumeProducer complete", {
+        producerId: producerId,
+        remoteUserId: userId,
+        kind: kind,
+      });
     } catch (err) {
       delete state.consumedProducerIds[producerId];
+      trace("error", "mediasoup", "consumeProducer error", {
+        producerId: producerId,
+        error: err && err.message ? err.message : String(err),
+      });
       console.error("consumeProducer error", err);
     }
   }
 
-  async function startCall(payload) {
+  function waitForSocketConnection(timeoutMs) {
+    timeoutMs = timeoutMs || 18000;
+
+    return new Promise(function (resolve, reject) {
+      if (!state.socket) {
+        reject(new Error("socket-not-initialized"));
+        return;
+      }
+
+      if (state.socket.connected === true) {
+        resolve();
+        return;
+      }
+
+      var done = false;
+      var timeout = setTimeout(function () {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error("socket-connect-timeout"));
+      }, timeoutMs);
+
+      function cleanup() {
+        clearTimeout(timeout);
+        state.socket.off("connect", onConnect);
+        state.socket.off("connect_error", onConnectError);
+      }
+
+      function onConnect() {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve();
+      }
+
+      function onConnectError(err) {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(err || new Error("socket-connect-error"));
+      }
+
+      state.socket.on("connect", onConnect);
+      state.socket.on("connect_error", onConnectError);
+    });
+  }
+
+  async function startCall(payload, options) {
+    options = options || {};
+    trace("debug", "call", "startCall invoked", {
+      roomId: payload && payload.roomId,
+      userId: payload && payload.userId,
+      callType: payload && payload.callType,
+      skipCleanup: options.skipCleanup === true,
+      isRecovery: options.isRecovery === true,
+      reason: options.reason || "",
+    });
+
+    var startToken = state.startToken + 1;
+    state.startToken = startToken;
+    state.isStopping = false;
+
+    if (!options.skipCleanup) {
+      await stopCall({
+        emitLeave: false,
+        notifyFlutterEnded: false,
+        preserveViewMode: true,
+        clearBootstrap: false,
+        invalidateStartToken: false,
+      });
+    }
+
+    if (startToken !== state.startToken) {
+      return;
+    }
+
+    state.socketUrl = payload.socketUrl || state.socketUrl || "";
     state.roomId = payload.roomId;
     state.userId = payload.userId;
     state.fullName = payload.fullName || payload.userId;
@@ -819,6 +1826,13 @@
     state.leaveEvent = payload.leaveEvent || "BE-leave-room";
     state.participantDirectory = {};
     state.remoteUserMeta = {};
+    state.remoteRenderReady = {};
+    state.localRenderReady = false;
+
+    state.bootstrapPayload = Object.assign({}, payload, {
+      socketUrl: state.socketUrl,
+      viewMode: payload.viewMode === "pip" ? "pip" : (state.viewMode || "normal"),
+    });
 
     if (payload.participants && typeof payload.participants === "object") {
       Object.keys(payload.participants).forEach(function (uid) {
@@ -833,112 +1847,199 @@
       state.participantDirectory[state.userId] = state.fullName;
     }
 
+    setViewMode(state.bootstrapPayload.viewMode || "normal");
     $("#roomTitle").text(state.groupName);
 
-    if (!payload.socketUrl) {
+    if (!state.socketUrl) {
       throw new Error("missing-socket-url");
     }
 
+    clearRecoveryTimers();
+
     await waitForMediasoupReady();
+    if (startToken !== state.startToken) {
+      return;
+    }
 
-    await connectSocket(payload.socketUrl);
-
-    // Wait for socket connect.
-    await new Promise(function (resolve, reject) {
-      var timeout = setTimeout(function () {
-        reject(new Error("socket-connect-timeout"));
-      }, 15000);
-      state.socket.once("connect", function () {
-        clearTimeout(timeout);
-        resolve();
-      });
-      state.socket.once("connect_error", function (err) {
-        clearTimeout(timeout);
-        reject(err || new Error("socket-connect-error"));
-      });
-    });
+    await connectSocket(state.socketUrl);
+    await waitForSocketConnection(18000);
+    if (startToken !== state.startToken) {
+      return;
+    }
 
     await initializeMedia();
+    if (startToken !== state.startToken) {
+      return;
+    }
+
     await joinRoomAndMediasoup();
+    if (startToken !== state.startToken) {
+      return;
+    }
+
+    trace("debug", "call", "startCall completed", {
+      roomId: state.roomId,
+      callType: state.callType,
+    });
   }
 
-  async function stopCall() {
-    try {
-      if (state.socket) {
-        state.socket.emit(state.leaveEvent || "BE-leave-room", {
-          roomId: state.roomId,
-          leaver: state.userId,
-        });
-        state.socket.emit("call_disconnect", {
-          roomId: state.roomId,
-          userId: state.socket.id,
-        });
-      }
-    } catch (_) {}
-
-    Object.keys(state.consumers).forEach(function (id) {
-      try {
-        state.consumers[id].close();
-      } catch (_) {}
+  async function stopCall(options) {
+    options = options || {};
+    trace("warn", "call", "stopCall invoked", {
+      emitLeave: options.emitLeave !== false,
+      notifyFlutterEnded: options.notifyFlutterEnded !== false,
+      preserveViewMode: options.preserveViewMode === true,
+      clearBootstrap: options.clearBootstrap,
+      invalidateStartToken: options.invalidateStartToken,
     });
-    state.consumers = {};
+
+    // Invalidate any in-flight start sequence so stale async steps do not
+    // reopen transports after a user-initiated leave.
+    var invalidateStartToken = options.invalidateStartToken !== false;
+    if (invalidateStartToken) {
+      state.startToken += 1;
+    }
+
+    var emitLeave = options.emitLeave !== false;
+    var notifyFlutterEnded = options.notifyFlutterEnded !== false;
+    var preserveViewMode = options.preserveViewMode === true;
+    var clearBootstrap =
+      typeof options.clearBootstrap === "boolean"
+        ? options.clearBootstrap
+        : notifyFlutterEnded;
+
+    clearRecoveryTimers();
+    state.isStopping = true;
 
     try {
-      if (state.audioProducer) state.audioProducer.close();
-    } catch (_) {}
-    try {
-      if (state.videoProducer) state.videoProducer.close();
-    } catch (_) {}
-    try {
-      if (state.sendTransport) state.sendTransport.close();
-    } catch (_) {}
-    try {
-      if (state.recvTransport) state.recvTransport.close();
-    } catch (_) {}
-
-    if (state.localStream) {
-      state.localStream.getTracks().forEach(function (t) {
+      if (emitLeave && state.socket) {
         try {
-          t.stop();
+          state.socket.emit(state.leaveEvent || "BE-leave-room", {
+            roomId: state.roomId,
+            leaver: state.userId,
+          });
+        } catch (_) {}
+
+        try {
+          state.socket.emit("call_disconnect", {
+            roomId: state.roomId,
+            userId: state.socket.id,
+          });
+        } catch (_) {}
+      }
+
+      Object.keys(state.consumers).forEach(function (id) {
+        try {
+          state.consumers[id].close();
         } catch (_) {}
       });
-    }
+      state.consumers = {};
 
-    if (state.socket) {
       try {
-        state.socket.off("FE-user-join");
-        state.socket.off("MS-new-producer");
-        state.socket.off("FE-user-leave");
-        state.socket.off("FE-toggle-camera");
-        state.socket.off("FE-call-ended");
-        state.socket.disconnect();
+        if (state.audioProducer) state.audioProducer.close();
       } catch (_) {}
+      try {
+        if (state.videoProducer) state.videoProducer.close();
+      } catch (_) {}
+      try {
+        if (state.sendTransport) state.sendTransport.close();
+      } catch (_) {}
+      try {
+        if (state.recvTransport) state.recvTransport.close();
+      } catch (_) {}
+
+      if (state.localStream) {
+        state.localStream.getTracks().forEach(function (track) {
+          try {
+            track.stop();
+          } catch (_) {}
+        });
+      }
+
+      if (state.socket) {
+        try {
+          state.socket.off("connect");
+          state.socket.off("reconnect");
+          state.socket.off("disconnect");
+          state.socket.off("connect_error");
+          state.socket.off("FE-user-join");
+          state.socket.off("MS-new-producer");
+          state.socket.off("FE-user-leave");
+          state.socket.off("FE-toggle-camera");
+          state.socket.off("FE-call-ended");
+          state.socket.disconnect();
+        } catch (_) {}
+      }
+    } finally {
+      state.localStream = null;
+      state.socket = null;
+      state.sendTransport = null;
+      state.recvTransport = null;
+      state.sendIceParameters = null;
+      state.recvIceParameters = null;
+      state.sendConnectionState = "closed";
+      state.recvConnectionState = "closed";
+      state.device = null;
+      state.audioProducer = null;
+      state.videoProducer = null;
+      state.remoteStreams = {};
+      state.remoteUserMeta = {};
+      state.remoteRenderReady = {};
+      state.localRenderReady = false;
+      state.participantDirectory = {};
+      state.consumedProducerIds = {};
+      state.lastIceRestartAt = 0;
+      state.iceRestartWindowStart = 0;
+      state.iceRestartBurstCount = 0;
+      state.isRestartingIce = false;
+      state.isRecovering = false;
+
+      if (clearBootstrap) {
+        state.bootstrapPayload = null;
+        state.socketUrl = "";
+      }
+
+      var localVideo = document.getElementById("localVideo");
+      if (localVideo) {
+        try {
+          localVideo.srcObject = null;
+        } catch (_) {}
+        localVideo.classList.remove("is-ready");
+      }
+
+      var localPlaceholder = document.getElementById("localPlaceholder");
+      if (localPlaceholder) {
+        localPlaceholder.classList.remove("hidden");
+      }
+      setLocalPlaceholderText("Preparing camera...");
+
+      var tiles = document.querySelectorAll(".tile[id^='remote-']");
+      tiles.forEach(function (el) {
+        el.remove();
+      });
+
+      if (!preserveViewMode) {
+        setViewMode("normal");
+      } else {
+        updateGridLayout();
+      }
+
+      if (notifyFlutterEnded) {
+        setStatus("left", "You left the call.");
+        postToFlutter("ended", {});
+      } else {
+        setStatus("idle", "Preparing media...");
+      }
+
+      state.isStopping = false;
+      trace("debug", "call", "stopCall completed", {
+        notifyFlutterEnded: notifyFlutterEnded,
+      });
     }
-
-    state.localStream = null;
-    state.socket = null;
-    state.sendTransport = null;
-    state.recvTransport = null;
-    state.device = null;
-    state.audioProducer = null;
-    state.videoProducer = null;
-    state.remoteStreams = {};
-    state.remoteUserMeta = {};
-    state.participantDirectory = {};
-    state.consumedProducerIds = {};
-
-    var tiles = document.querySelectorAll(".tile[id^='remote-']");
-    tiles.forEach(function (el) {
-      el.remove();
-    });
-
-    updateGridLayout();
-
-    setStatus("left", "You left the call.");
-    postToFlutter("ended", {});
   }
 
   async function toggleMic(enabled) {
+    trace("debug", "media", "toggleMic", { enabled: enabled });
     if (!state.localStream) return;
     var tracks = state.localStream.getAudioTracks();
     if (!tracks.length) return;
@@ -968,6 +2069,7 @@
   }
 
   async function toggleCamera(enabled) {
+    trace("debug", "media", "toggleCamera", { enabled: enabled });
     if (!state.localStream) return;
     var tracks = state.localStream.getVideoTracks();
     if (!tracks.length) return;
@@ -986,6 +2088,10 @@
 
     state.isCameraEnabled = enabled;
 
+    setLocalPlaceholderText(enabled ? "Starting camera..." : "Camera is off");
+    state.localRenderReady = false;
+    updateLocalVisualState(state.localStream);
+
     if (state.socket && state.roomId) {
       state.socket.emit("BE-toggle-camera-audio", {
         roomId: state.roomId,
@@ -997,6 +2103,9 @@
   }
 
   async function switchCamera() {
+    trace("debug", "media", "switchCamera requested", {
+      currentFacing: state.facingMode,
+    });
     if (state.callType !== "video") return;
 
     var nextFacing = state.facingMode === "user" ? "environment" : "user";
@@ -1039,14 +2148,25 @@
     }
 
     var localVideo = document.getElementById("localVideo");
+    configureVideoElement(localVideo, { isLocal: true, userId: state.userId, muted: true });
+    state.localRenderReady = false;
     localVideo.srcObject = state.localStream;
-    localVideo.play().catch(function () {});
+    localVideo.play().catch(function (err) {
+      trace("warn", "local-video", "switchCamera play() rejected", {
+        error: err && err.message ? err.message : String(err),
+      });
+    });
 
     state.facingMode = nextFacing;
+    updateLocalVisualState(state.localStream);
+    trace("debug", "media", "switchCamera completed", {
+      facingMode: state.facingMode,
+    });
   }
 
   function toggleSpeaker(enabled) {
     state.isSpeakerEnabled = enabled;
+    trace("debug", "media", "toggleSpeaker", { enabled: enabled });
     postToFlutter("speaker", { enabled: enabled });
   }
 
@@ -1055,10 +2175,13 @@
       var parsed = JSON.parse(raw);
       var action = parsed.action;
       var payload = parsed.payload || {};
+      trace("debug", "bridge", "receiveFromFlutter action", {
+        action: action,
+      });
 
       if (action === "bootstrap") {
         setStatus("bootstrapping", "Connecting to call service...");
-        startCall(payload).catch(function (err) {
+        startCall(payload, { skipCleanup: false }).catch(function (err) {
           console.error("bootstrap failed", err);
           setStatus("error", "Failed to initialize call.");
           postToFlutter("error", {
@@ -1071,9 +2194,19 @@
             roomId: payload.roomId,
           });
         }
-        stopCall();
+        stopCall({
+          emitLeave: true,
+          notifyFlutterEnded: true,
+          preserveViewMode: false,
+          clearBootstrap: true,
+        });
       } else if (action === "leaveCall") {
-        stopCall();
+        stopCall({
+          emitLeave: true,
+          notifyFlutterEnded: true,
+          preserveViewMode: false,
+          clearBootstrap: true,
+        });
       } else if (action === "toggleMic") {
         toggleMic(!!payload.enabled);
       } else if (action === "toggleCamera") {
@@ -1087,11 +2220,24 @@
       } else if (action === "toggleSpeaker") {
         toggleSpeaker(!!payload.enabled);
       } else if (action === "reconnect") {
-        if (state.socket && !state.socket.connected) {
-          state.socket.connect();
+        if (state.socket && state.socket.connected) {
+          scheduleIceRestart("both", 300);
+        } else if (state.socket && !state.socket.connected) {
+          try {
+            state.socket.connect();
+          } catch (_) {}
+          scheduleFullRecover("manual-reconnect", 900);
+        } else {
+          scheduleFullRecover("manual-reconnect", 0);
         }
+      } else if (action === "setViewMode") {
+        setViewMode(payload.mode === "pip" ? "pip" : "normal");
       }
     } catch (err) {
+      trace("error", "bridge", "receiveFromFlutter parse error", {
+        error: err && err.message ? err.message : String(err),
+        raw: raw,
+      });
       postToFlutter("error", { message: "bridge-parse-error" });
     }
   }
@@ -1100,8 +2246,29 @@
     receiveFromFlutter: receiveFromFlutter,
   };
 
+  window.addEventListener("error", function (event) {
+    trace("error", "window", "uncaught error", {
+      message: event && event.message ? event.message : "unknown",
+      filename: event && event.filename ? event.filename : "",
+      lineno: event && event.lineno ? event.lineno : 0,
+      colno: event && event.colno ? event.colno : 0,
+      stack: event && event.error && event.error.stack ? event.error.stack : "",
+    });
+  });
+
+  window.addEventListener("unhandledrejection", function (event) {
+    trace("error", "window", "unhandled promise rejection", {
+      reason: event && event.reason ? safeStringify(event.reason) : "unknown",
+    });
+  });
+
+  trace("debug", "startup", "embedded group call web app initialized");
+
   // Start loading mediasoup immediately to reduce bootstrap latency.
   loadMediasoupClient().catch(function (err) {
+    trace("error", "mediasoup", "initial mediasoup load failed", {
+      error: err && err.message ? err.message : String(err),
+    });
     postToFlutter("error", {
       message: (err && err.name ? err.name + ": " : "") + (err && err.message ? err.message : "mediasoup-load-failed"),
     });
@@ -1110,5 +2277,6 @@
   updateGridLayout();
 
   // Ready signal for Flutter side.
+  trace("debug", "startup", "sending ready signal to Flutter");
   postToFlutter("ready", {});
 })();
