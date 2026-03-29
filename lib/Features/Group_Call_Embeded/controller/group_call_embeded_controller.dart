@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:audio_session/audio_session.dart';
 import 'package:cu_app/Api/urls.dart';
 import 'package:cu_app/Commons/platform_channels.dart';
+import 'package:cu_app/Features/Group_Call/controller/group_call_turn.dart';
 import 'package:cu_app/Features/Home/Model/group_list_model.dart';
 import 'package:cu_app/Features/Home/Repository/group_repo.dart';
 import 'package:cu_app/Utils/storage_service.dart';
@@ -343,15 +344,26 @@ class GroupCallEmbededController extends GetxController {
       await LocalStorage().setIsAnyCallActive(true);
       await LocalStorage().setActiveCallRoomId(roomId);
 
+      final embeddedIceFallback = _buildEmbeddedIceFallback();
+      final constraints = <String, dynamic>{
+        'audio': true,
+        'video': isVideoCall,
+      };
+
       _pageReadyCompleter = Completer<void>();
       _pendingBootstrap = {
-        'socketUrl': ApiPath.socketUrl,
+        'socketUrl': ApiPath.mediasoupSocketUrl,
         'roomId': roomId,
         'groupName': groupName,
         'userId': userId,
         'fullName': userFullName,
+        'callerName': userFullName,
+        'groupImage': '',
         'participants': participants,
         'callType': isVideoCall ? 'video' : 'audio',
+        'constraints': constraints,
+        'fallbackIceServers': embeddedIceFallback['iceServers'],
+        'fallbackIceTransportPolicy': embeddedIceFallback['iceTransportPolicy'],
         'joinEvent': 'BE-join-room',
         'leaveEvent': 'BE-leave-room',
         'isJoinFlow': isJoinFlow,
@@ -531,6 +543,68 @@ class GroupCallEmbededController extends GetxController {
     }
 
     return true;
+  }
+
+  Map<String, dynamic> _buildEmbeddedIceFallback() {
+    final config = GroupCallTurn.getOptimalIceConfig();
+    final rawServers = config['iceServers'];
+    final List<Map<String, dynamic>> iceServers = <Map<String, dynamic>>[];
+
+    if (rawServers is List) {
+      for (final raw in rawServers) {
+        if (raw is! Map) {
+          continue;
+        }
+
+        final urlsValue = raw['urls'];
+        final List<String> urls;
+        if (urlsValue is List) {
+          urls = urlsValue
+              .map((e) => e.toString().trim())
+              .where((e) => e.isNotEmpty)
+              .toList();
+        } else if (urlsValue != null) {
+          final single = urlsValue.toString().trim();
+          urls = single.isEmpty ? <String>[] : <String>[single];
+        } else {
+          urls = <String>[];
+        }
+
+        if (urls.isEmpty) {
+          continue;
+        }
+
+        final username = raw['username']?.toString().trim() ?? '';
+        final credential = raw['credential']?.toString().trim() ?? '';
+
+        final server = <String, dynamic>{
+          'urls': urls.length == 1 ? urls.first : urls,
+        };
+
+        if (username.isNotEmpty) {
+          server['username'] = username;
+        }
+        if (credential.isNotEmpty) {
+          server['credential'] = credential;
+        }
+
+        iceServers.add(server);
+      }
+    }
+
+    final rawPolicy =
+        (config['iceTransportPolicy'] ?? 'all').toString().toLowerCase();
+    final policy = rawPolicy == 'relay' ? 'relay' : 'all';
+
+    _log('embedded-ice-fallback', {
+      'serverCount': iceServers.length,
+      'policy': policy,
+    });
+
+    return <String, dynamic>{
+      'iceServers': iceServers,
+      'iceTransportPolicy': policy,
+    };
   }
 
   Future<String> _getGroupDetailsById(String groupId, String field) async {

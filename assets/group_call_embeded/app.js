@@ -23,12 +23,16 @@
     remoteStreams: {},
     remoteUserMeta: {},
     participantDirectory: {},
+    socketToUserMap: {},
+    userToSocketMap: {},
     isMicEnabled: true,
     isCameraEnabled: true,
     isSpeakerEnabled: true,
     hasRealDevices: false,
     facingMode: "user",
     groupName: "Group Call",
+    callerName: "",
+    groupImage: "",
     viewMode: "normal",
     bootstrapPayload: null,
     isStopping: false,
@@ -44,6 +48,8 @@
     enableVerboseLogs: true,
     remoteRenderReady: {},
     localRenderReady: false,
+    fallbackIceServers: [],
+    fallbackIceTransportPolicy: "all",
   };
 
   var mediasoupLoaderPromise = null;
@@ -356,6 +362,133 @@
     if (!showVideo) {
       updateRemotePlaceholderText(userId);
     }
+  }
+
+  function normalizeIceServers(rawServers) {
+    if (!Array.isArray(rawServers)) {
+      return [];
+    }
+
+    var normalized = [];
+    rawServers.forEach(function (server) {
+      if (!server || typeof server !== "object") {
+        return;
+      }
+
+      var urlsValue = server.urls;
+      var urls = [];
+      if (Array.isArray(urlsValue)) {
+        urls = urlsValue.map(function (url) {
+          return String(url || "").trim();
+        }).filter(function (url) {
+          return url.length > 0;
+        });
+      } else if (urlsValue != null) {
+        var one = String(urlsValue).trim();
+        if (one) {
+          urls = [one];
+        }
+      }
+
+      if (!urls.length) {
+        return;
+      }
+
+      var entry = {
+        urls: urls.length === 1 ? urls[0] : urls,
+      };
+
+      if (server.username != null && String(server.username).trim().length > 0) {
+        entry.username = String(server.username).trim();
+      }
+
+      if (server.credential != null && String(server.credential).trim().length > 0) {
+        entry.credential = String(server.credential).trim();
+      }
+
+      normalized.push(entry);
+    });
+
+    return normalized;
+  }
+
+  function resolveRemoteUserId(socketUserId, userName) {
+    var normalizedUserName = userName ? String(userName) : "";
+    if (normalizedUserName) {
+      return normalizedUserName;
+    }
+
+    var normalizedSocketId = socketUserId ? String(socketUserId) : "";
+    if (!normalizedSocketId) {
+      return "";
+    }
+
+    if (state.socketToUserMap[normalizedSocketId]) {
+      return state.socketToUserMap[normalizedSocketId];
+    }
+
+    if (state.remoteUserMeta[normalizedSocketId]) {
+      return normalizedSocketId;
+    }
+
+    var mapped = "";
+    Object.keys(state.remoteUserMeta).some(function (uid) {
+      var meta = state.remoteUserMeta[uid] || {};
+      if (meta.socketId && String(meta.socketId) === normalizedSocketId) {
+        mapped = uid;
+        return true;
+      }
+      return false;
+    });
+
+    return mapped;
+  }
+
+  function resolveRemoteUserIdFromPayload(payload) {
+    if (Array.isArray(payload) && payload.length > 0) {
+      payload = payload[0];
+    }
+
+    if (!payload || typeof payload !== "object") {
+      return "";
+    }
+
+    var userName = payload.userName ? String(payload.userName) : "";
+    var socketUserId = payload.userId ? String(payload.userId) : "";
+
+    return resolveRemoteUserId(socketUserId, userName);
+  }
+
+  function removeRemoteUser(userId, reason) {
+    if (!userId || userId === state.userId) {
+      return;
+    }
+
+    var normalizedUserId = String(userId);
+    var meta = state.remoteUserMeta[normalizedUserId] || {};
+    var socketId = state.userToSocketMap[normalizedUserId] || (meta.socketId ? String(meta.socketId) : "");
+
+    if (socketId) {
+      delete state.socketToUserMap[socketId];
+    }
+    delete state.userToSocketMap[normalizedUserId];
+
+    delete state.remoteStreams[normalizedUserId];
+    delete state.remoteUserMeta[normalizedUserId];
+    delete state.remoteRenderReady[normalizedUserId];
+
+    var tile = document.getElementById("remote-" + normalizedUserId);
+    if (tile) {
+      tile.remove();
+    }
+
+    trace("debug", "socket", "remote user removed", {
+      userId: normalizedUserId,
+      reason: reason || "unknown",
+      socketId: socketId,
+    });
+
+    updateGridLayout();
   }
 
   function escapeHtml(value) {
@@ -1329,6 +1462,16 @@
           state.participantDirectory[userName] ||
           userName;
 
+        var previousSocketId = state.userToSocketMap[userName] || "";
+        if (previousSocketId && socketId && previousSocketId !== socketId) {
+          delete state.socketToUserMap[previousSocketId];
+        }
+
+        if (socketId) {
+          state.socketToUserMap[socketId] = userName;
+          state.userToSocketMap[userName] = socketId;
+        }
+
         state.participantDirectory[userName] = String(displayName);
         state.remoteUserMeta[userName] = {
           socketId: socketId,
@@ -1370,14 +1513,24 @@
 
     state.socket.on("FE-user-leave", function (payload) {
       trace("debug", "socket", "FE-user-leave received", payload);
-      var userName = payload && payload.userName;
-      if (!userName) return;
-      delete state.remoteStreams[userName];
-      delete state.remoteUserMeta[userName];
-      delete state.remoteRenderReady[userName];
-      var tile = document.getElementById("remote-" + userName);
-      if (tile) tile.remove();
-      updateGridLayout();
+      var resolvedUserId = resolveRemoteUserIdFromPayload(payload);
+      if (!resolvedUserId) {
+        trace("warn", "socket", "FE-user-leave unresolved user", payload);
+        return;
+      }
+
+      removeRemoteUser(resolvedUserId, "FE-user-leave");
+    });
+
+    state.socket.on("FE-user-disconnected", function (payload) {
+      trace("debug", "socket", "FE-user-disconnected received", payload);
+      var resolvedUserId = resolveRemoteUserIdFromPayload(payload);
+      if (!resolvedUserId) {
+        trace("warn", "socket", "FE-user-disconnected unresolved user", payload);
+        return;
+      }
+
+      removeRemoteUser(resolvedUserId, "FE-user-disconnected");
     });
 
     state.socket.on("FE-toggle-camera", function (payload) {
@@ -1471,10 +1624,17 @@
       roomId: state.roomId,
       userName: state.userId,
       fullName: state.fullName,
+      callerName: state.callerName || state.fullName,
+      groupName: state.groupName,
+      groupImage: state.groupImage || "",
       callType: state.callType,
       video: state.localStream.getVideoTracks().length > 0,
       audio: state.localStream.getAudioTracks().length > 0,
       hasRealDevices: state.hasRealDevices,
+      constraints: {
+        audio: state.isMicEnabled,
+        video: state.callType === "video" && state.isCameraEnabled,
+      },
     });
 
     var rtpCapsRes = await emitAck("MS-get-rtp-capabilities", { roomId: state.roomId });
@@ -1494,11 +1654,42 @@
       canProduceVideo: state.device.canProduce("video"),
     });
 
-    var iceCfg = await emitAck("MS-get-ice-servers", null, 15000, {
-      noPayload: true,
+    var iceCfg = null;
+    try {
+      iceCfg = await emitAck("MS-get-ice-servers", null, 15000, {
+        noPayload: true,
+      });
+    } catch (err) {
+      trace("warn", "ice", "MS-get-ice-servers failed, using fallback config", {
+        error: err && err.message ? err.message : String(err),
+      });
+    }
+
+    var hasBackendServers =
+      !!(iceCfg && iceCfg.ok === true && Array.isArray(iceCfg.iceServers) && iceCfg.iceServers.length > 0);
+
+    var fallbackIceServers = normalizeIceServers(state.fallbackIceServers);
+    var iceServers = hasBackendServers
+      ? normalizeIceServers(iceCfg.iceServers)
+      : fallbackIceServers;
+
+    var fallbackPolicy = String(state.fallbackIceTransportPolicy || "all").toLowerCase();
+    fallbackPolicy = fallbackPolicy === "relay" ? "relay" : "all";
+
+    var backendPolicy =
+      iceCfg && iceCfg.ok === true && typeof iceCfg.iceTransportPolicy === "string"
+        ? String(iceCfg.iceTransportPolicy).toLowerCase()
+        : "";
+
+    var iceTransportPolicy = backendPolicy || fallbackPolicy;
+
+    trace("debug", "ice", "resolved ICE config", {
+      backendAvailable: hasBackendServers,
+      backendServerCount: hasBackendServers ? iceCfg.iceServers.length : 0,
+      fallbackServerCount: fallbackIceServers.length,
+      usingServerCount: iceServers.length,
+      policy: iceTransportPolicy,
     });
-    var iceServers = (iceCfg && iceCfg.ok && iceCfg.iceServers) ? iceCfg.iceServers : [];
-    var iceTransportPolicy = (iceCfg && iceCfg.iceTransportPolicy) ? iceCfg.iceTransportPolicy : "all";
 
     var sendInfo = await emitAck("MS-create-transport", {
       roomId: state.roomId,
@@ -1821,13 +2012,25 @@
     state.userId = payload.userId;
     state.fullName = payload.fullName || payload.userId;
     state.groupName = payload.groupName || "Group Call";
+    state.callerName = payload.callerName || state.fullName;
+    state.groupImage = payload.groupImage || "";
     state.callType = payload.callType || "video";
     state.joinEvent = payload.joinEvent || "BE-join-room";
     state.leaveEvent = payload.leaveEvent || "BE-leave-room";
     state.participantDirectory = {};
     state.remoteUserMeta = {};
+    state.socketToUserMap = {};
+    state.userToSocketMap = {};
     state.remoteRenderReady = {};
     state.localRenderReady = false;
+
+    state.fallbackIceServers = normalizeIceServers(
+      payload.fallbackIceServers || state.fallbackIceServers || []
+    );
+    var fallbackPolicy = String(
+      payload.fallbackIceTransportPolicy || state.fallbackIceTransportPolicy || "all"
+    ).toLowerCase();
+    state.fallbackIceTransportPolicy = fallbackPolicy === "relay" ? "relay" : "all";
 
     state.bootstrapPayload = Object.assign({}, payload, {
       socketUrl: state.socketUrl,
@@ -1965,6 +2168,7 @@
           state.socket.off("FE-user-join");
           state.socket.off("MS-new-producer");
           state.socket.off("FE-user-leave");
+          state.socket.off("FE-user-disconnected");
           state.socket.off("FE-toggle-camera");
           state.socket.off("FE-call-ended");
           state.socket.disconnect();
@@ -1982,8 +2186,12 @@
       state.device = null;
       state.audioProducer = null;
       state.videoProducer = null;
+      state.callerName = "";
+      state.groupImage = "";
       state.remoteStreams = {};
       state.remoteUserMeta = {};
+      state.socketToUserMap = {};
+      state.userToSocketMap = {};
       state.remoteRenderReady = {};
       state.localRenderReady = false;
       state.participantDirectory = {};

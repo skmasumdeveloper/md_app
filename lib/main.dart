@@ -186,7 +186,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     listenerEvent(onEvent);
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      Get.put(GroupcallController());
+      if (!GroupCallEmbededConfig.enabled) {
+        Get.put(GroupcallController());
+      }
       _getupToken();
 
       // initialize deep link handling
@@ -308,29 +310,45 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                 currentRoute.contains('ChatScreen');
 
             if (isOnChatScreen) {
-              final groupcallController = Get.put(GroupcallController());
+              final GroupcallController? groupcallController =
+                  Get.isRegistered<GroupcallController>()
+                      ? Get.find<GroupcallController>()
+                      : (GroupCallEmbededConfig.enabled
+                          ? null
+                          : Get.put(GroupcallController()));
               Future.delayed(const Duration(seconds: 1), () {
                 GroupCallEmbededController? embeddedController;
                 if (GroupCallEmbededConfig.enabled) {
-                  embeddedController = Get.put(GroupCallEmbededController());
+                  embeddedController =
+                      Get.isRegistered<GroupCallEmbededController>()
+                          ? Get.find<GroupCallEmbededController>()
+                          : Get.put(GroupCallEmbededController());
                 }
 
                 // guard against duplicated navigation
-                if (groupcallController.isCallActive.value ||
+                if ((groupcallController?.isCallActive.value == true) ||
                     (embeddedController?.isCallActive.value == true) ||
-                    groupcallController.isNavigatingToCall ||
+                    (groupcallController?.isNavigatingToCall == true) ||
                     Get.currentRoute.contains('GroupVideoCallScreen') ||
                     Get.currentRoute.contains('GroupCallEmbededScreen')) {
                   return;
                 }
 
+                final localUserId =
+                    (GetStorage().read('userId') ?? '').toString();
+                final localUserName =
+                    (GetStorage().read('userName') ?? '').toString();
+
                 if (GroupCallEmbededConfig.enabled &&
                     embeddedController != null) {
-                  embeddedController.outgoingCallEmit(
-                    currentCall['extra']['groupId'],
+                  unawaited(embeddedController.joinCall(
+                    roomId: currentCall['extra']['groupId'],
+                    userName: localUserId,
+                    userFullName: localUserName,
+                    context: context,
                     isVideoCall: callType == 'video' ? true : false,
-                  );
-                } else {
+                  ));
+                } else if (groupcallController != null) {
                   groupcallController.outgoingCallEmit(
                     currentCall['extra']['groupId'],
                     isVideoCall: callType == 'video' ? true : false,

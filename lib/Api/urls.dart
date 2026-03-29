@@ -28,6 +28,8 @@ class Urls {
 class ApiPath {
   static String baseUrls = Urls.baseUrl;
   static String socketUrl = dotenv.env['SOCKET_URL'] ?? '';
+  static String mediasoupSocketUrl =
+      dotenv.env['MEDIASOUP_SOCKET_URL'] ?? socketUrl;
   static String updateProfileDetails = "$baseUrls/users/update-user";
   static String changePassword = "${baseUrls}users/change-password";
   static String messageReportApi = "$baseUrls/groups/report-message";
