@@ -21,7 +21,7 @@
 
     <main id="grid" class="grid">
       <section class="tile local">
-        <video id="localVideo" autoplay playsinline muted></video>
+        <video id="localVideo" autoplay playsinline muted disablepictureinpicture webkit-playsinline></video>
         <div id="localPlaceholder" class="local-connecting">
           <div class="local-avatar">You</div>
           <div id="localPlaceholderText" class="local-connecting-text">
@@ -29,8 +29,7 @@
           </div>
         </div>
         <div class="meta">
-          <span class="name">You</span>
-          <span class="badge" id="localBadge">local</span>
+          <span class="badge" id="localBadge">You</span>
         </div>
       </section>
     </main>

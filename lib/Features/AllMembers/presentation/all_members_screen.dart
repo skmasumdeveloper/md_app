@@ -337,23 +337,23 @@ class _AllMembersScreenState extends State<AllMembersScreen> {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    IconButton(
-                      onPressed: () => allMembersController.directChat(member),
-                      icon: Icon(
-                        Icons.message_outlined,
-                        color: colors.idleStatus,
-                        size: 20,
-                      ),
-                      constraints: const BoxConstraints(),
-                      padding: const EdgeInsets.all(4),
-                      style: IconButton.styleFrom(
-                        backgroundColor: AppColors.primary.withOpacity(0.1),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 5),
+                    // IconButton(
+                    //   onPressed: () => allMembersController.directChat(member),
+                    //   icon: Icon(
+                    //     Icons.message_outlined,
+                    //     color: colors.idleStatus,
+                    //     size: 20,
+                    //   ),
+                    //   constraints: const BoxConstraints(),
+                    //   padding: const EdgeInsets.all(4),
+                    //   style: IconButton.styleFrom(
+                    //     backgroundColor: AppColors.primary.withOpacity(0.1),
+                    //     shape: RoundedRectangleBorder(
+                    //       borderRadius: BorderRadius.circular(8),
+                    //     ),
+                    //   ),
+                    // ),
+                    // const SizedBox(width: 5),
                     IconButton(
                       onPressed: () => allMembersController.editMember(member),
                       icon: Icon(

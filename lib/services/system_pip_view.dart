@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:get/get.dart';
 import 'package:cu_app/Features/Group_Call_Embeded/controller/group_call_embeded_controller.dart';
-import 'package:cu_app/Features/Group_Call/controller/group_call.dart';
+import 'package:cu_app/Features/Group_Call_New/controller/group_call_new_controller.dart';
+import 'package:cu_app/Features/Group_Call_old/controller/group_call.dart';
 import 'package:cu_app/Features/GuestCall/controller/guest_call_controller.dart';
 import 'package:cu_app/services/call_service.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -73,6 +74,15 @@ class _PipVideoContent extends StatelessWidget {
         unawaited(embeddedController.setCompactMode(true));
 
         return _buildEmbeddedPipSurface(embeddedController);
+      }
+
+      // New native group call PiP
+      final newCallController = Get.isRegistered<GroupCallNewController>()
+          ? Get.find<GroupCallNewController>()
+          : null;
+      if (newCallController != null && newCallController.isCallActive.value) {
+        debugPrint("[PipFeature] Rendering New Group Call PiP");
+        return _buildNewCallPip(newCallController);
       }
 
       debugPrint("[PipFeature] No active call found for PiP");
@@ -154,6 +164,37 @@ class _PipVideoContent extends StatelessWidget {
       return Container(
         color: Colors.black,
         child: WebViewWidget(controller: webController),
+      );
+    }
+
+    return _audioCallView();
+  }
+
+  Widget _buildNewCallPip(GroupCallNewController controller) {
+    // Show first remote participant's video, or local video fallback
+    final remoteWithVideo = controller.participants.values
+        .where((p) => !p.isLocal && p.hasActiveVideo && p.renderer != null)
+        .toList();
+
+    if (remoteWithVideo.isNotEmpty) {
+      return Container(
+        color: Colors.black,
+        child: RTCVideoView(
+          remoteWithVideo.first.renderer!,
+          objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        ),
+      );
+    }
+
+    final local = controller.localParticipant;
+    if (local != null && local.hasActiveVideo && local.renderer != null) {
+      return Container(
+        color: Colors.black,
+        child: RTCVideoView(
+          local.renderer!,
+          mirror: true,
+          objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        ),
       );
     }
 

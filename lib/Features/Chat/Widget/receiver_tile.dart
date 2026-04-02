@@ -6,6 +6,7 @@ import 'package:cu_app/Features/Chat/Controller/chat_controller.dart';
 import 'package:cu_app/Features/Chat/Model/chat_list_model.dart';
 import 'package:cu_app/Features/Chat/Widget/sender_reply_widget.dart';
 import 'package:cu_app/Utils/check_website.dart';
+import 'package:cu_app/Features/Chat/Widget/screen_recording_player.dart';
 import 'package:cu_app/Widgets/video_player.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_chat_bubble/chat_bubble.dart';
@@ -469,7 +470,20 @@ class _ReceiverTileState extends State<ReceiverTile> {
                                                         ),
                                                       ),
                                                     )
-                                                  : const SizedBox(),
+                                                  : widget.messageType ==
+                                                          "screen_recording"
+                                                      ? ScreenRecordingChatBubble(
+                                                          message:
+                                                              widget.message,
+                                                          fileName:
+                                                              widget.fileName,
+                                                          textColor: colors
+                                                              .textPrimary,
+                                                          secondaryTextColor:
+                                                              colors
+                                                                  .textSecondary,
+                                                        )
+                                                      : const SizedBox(),
                                 ),
                               ),
                             ),
@@ -482,3 +496,4 @@ class _ReceiverTileState extends State<ReceiverTile> {
     );
   }
 }
+

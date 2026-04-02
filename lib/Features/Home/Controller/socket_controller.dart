@@ -8,7 +8,8 @@ import 'package:cu_app/Api/urls.dart';
 import 'package:cu_app/Features/Chat/Controller/chat_controller.dart';
 import 'package:cu_app/Features/Group_Call_Embeded/controller/group_call_embeded_controller.dart';
 import 'package:cu_app/Features/Group_Call_Embeded/group_call_embeded_config.dart';
-import 'package:cu_app/Features/Group_Call/controller/group_call.dart';
+import 'package:cu_app/Features/Group_Call_New/controller/group_call_new_controller.dart';
+import 'package:cu_app/Features/Group_Call_old/controller/group_call.dart';
 import 'package:cu_app/Features/Home/Controller/group_list_controller.dart';
 import 'package:cu_app/Features/Login/Controller/login_controller.dart';
 import 'package:cu_app/Features/Login/Presentation/login_screen.dart';
@@ -106,7 +107,41 @@ class SocketController extends GetxController {
         // Refresh group list after socket connects to get latest data
         groupListController.getGroupList(isLoadingShow: false);
 
+        // Refresh chat messages and check active call if on chat screen
+        try {
+          if (Get.isRegistered<ChatController>()) {
+            final chatCtrl = Get.find<ChatController>();
+            if (chatCtrl.isChatScreen.value &&
+                chatCtrl.groupId.value.isNotEmpty) {
+              chatCtrl.getAllChatByGroupId(
+                groupId: chatCtrl.groupId.value,
+                isShowLoading: false,
+              );
+              chatCtrl.checkActiveCall(
+                chatCtrl.groupId.value,
+                isShowLoading: false,
+              );
+            }
+          }
+        } catch (_) {}
+
         if (socketId.isNotEmpty) {
+          // Check if the new native group call module is active
+          final isNewCallActive =
+              Get.isRegistered<GroupCallNewController>() &&
+                  Get.find<GroupCallNewController>()
+                          .isAnyCallActive
+                          .value ==
+                      true;
+          if (isNewCallActive) {
+            try {
+              Get.find<GroupCallNewController>().reconnect();
+            } catch (_) {}
+            debugPrint(
+                '[Socket] connect: skip native reCallConnect (new call module active)');
+            return;
+          }
+
           final isEmbeddedCallActive = GroupCallEmbededConfig.enabled &&
               ((Get.isRegistered<GroupCallEmbededController>() &&
                       Get.find<GroupCallEmbededController>()

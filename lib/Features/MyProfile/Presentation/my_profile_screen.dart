@@ -23,7 +23,7 @@ import '../../../Utils/safe_cached_image.dart';
 import '../../../Widgets/custom_confirmation_dialog.dart';
 import '../../../Widgets/image_popup.dart';
 import '../../GroupInfo/Model/image_picker_model.dart';
-import '../../Group_Call/controller/group_call.dart';
+import '../../Group_Call_old/controller/group_call.dart';
 import '../../Navigation/Controller/navigation_controller.dart';
 
 // This screen displays the user's profile information, including their name, email, and profile picture. It also provides options to change the password, update the status, and log out.

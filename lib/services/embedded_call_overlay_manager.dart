@@ -198,8 +198,8 @@ class _EmbeddedFloatingCallWidgetState
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
-    final overlayWidth = (screenWidth * 0.46).clamp(150.0, 240.0);
-    final overlayHeight = (overlayWidth / 1.52).clamp(102.0, 168.0);
+    final overlayWidth = (screenWidth * 0.36).clamp(120.0, 180.0);
+    final overlayHeight = (overlayWidth * 1.6).clamp(192.0, 288.0);
 
     if (screenWidth < 200 || screenHeight < 300) {
       return const SizedBox.shrink();
@@ -245,54 +245,7 @@ class _EmbeddedFloatingCallWidgetState
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(10),
-              child: Stack(
-                children: [
-                  Positioned.fill(child: _buildPreview()),
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 6),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.bottomCenter,
-                          end: Alignment.topCenter,
-                          colors: [
-                            Colors.black.withOpacity(0.9),
-                            Colors.transparent,
-                          ],
-                        ),
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            widget.isMeeting
-                                ? '${widget.groupName} (Meeting)'
-                                : widget.groupName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 10,
-                            ),
-                          ),
-                          const Text(
-                            'Tap to expand',
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontSize: 8,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+              child: _buildPreview(),
             ),
           ),
         ),

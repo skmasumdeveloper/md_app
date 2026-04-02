@@ -357,55 +357,55 @@ class _MeetingDetailsScreenState extends State<MeetingDetailsScreen> {
                                               ),
                                             ),
 
-                                            // copy/share invite buttons (hide for device calendar events)
-                                            if (!isDeviceEvent) ...[
-                                              const SizedBox(width: 12),
-                                              GestureDetector(
-                                                onTap: () async {
-                                                  final meetingData =
-                                                      meetingDetailsController
-                                                          .meetingDetails.value;
-                                                  await InviteUtils
-                                                      .copyInviteToClipboard(
-                                                    context: context,
-                                                    link:
-                                                        meetingData?.link ?? '',
-                                                    pin: meetingData?.pin ?? '',
-                                                    meetingStartTime:
-                                                        meetingData
-                                                            ?.meetingStartTime,
-                                                  );
-                                                },
-                                                child: const Icon(
-                                                  Icons.copy,
-                                                  size: 20,
-                                                  color: AppColors.primary,
-                                                ),
-                                              ),
+                                            // // copy/share invite buttons (hide for device calendar events)
+                                            // if (!isDeviceEvent) ...[
+                                            //   const SizedBox(width: 12),
+                                            //   GestureDetector(
+                                            //     onTap: () async {
+                                            //       final meetingData =
+                                            //           meetingDetailsController
+                                            //               .meetingDetails.value;
+                                            //       await InviteUtils
+                                            //           .copyInviteToClipboard(
+                                            //         context: context,
+                                            //         link:
+                                            //             meetingData?.link ?? '',
+                                            //         pin: meetingData?.pin ?? '',
+                                            //         meetingStartTime:
+                                            //             meetingData
+                                            //                 ?.meetingStartTime,
+                                            //       );
+                                            //     },
+                                            //     child: const Icon(
+                                            //       Icons.copy,
+                                            //       size: 20,
+                                            //       color: AppColors.primary,
+                                            //     ),
+                                            //   ),
 
-                                              // share button
-                                              const SizedBox(width: 8),
-                                              GestureDetector(
-                                                onTap: () async {
-                                                  final meetingData =
-                                                      meetingDetailsController
-                                                          .meetingDetails.value;
-                                                  await InviteUtils.shareInvite(
-                                                    link:
-                                                        meetingData?.link ?? '',
-                                                    pin: meetingData?.pin ?? '',
-                                                    meetingStartTime:
-                                                        meetingData
-                                                            ?.meetingStartTime,
-                                                  );
-                                                },
-                                                child: const Icon(
-                                                  Icons.share,
-                                                  size: 20,
-                                                  color: AppColors.primary,
-                                                ),
-                                              ),
-                                            ],
+                                            //   // share button
+                                            //   const SizedBox(width: 8),
+                                            //   GestureDetector(
+                                            //     onTap: () async {
+                                            //       final meetingData =
+                                            //           meetingDetailsController
+                                            //               .meetingDetails.value;
+                                            //       await InviteUtils.shareInvite(
+                                            //         link:
+                                            //             meetingData?.link ?? '',
+                                            //         pin: meetingData?.pin ?? '',
+                                            //         meetingStartTime:
+                                            //             meetingData
+                                            //                 ?.meetingStartTime,
+                                            //       );
+                                            //     },
+                                            //     child: const Icon(
+                                            //       Icons.share,
+                                            //       size: 20,
+                                            //       color: AppColors.primary,
+                                            //     ),
+                                            //   ),
+                                            // ],
                                           ],
                                         );
                                 }),
@@ -612,111 +612,111 @@ class _MeetingDetailsScreenState extends State<MeetingDetailsScreen> {
                       );
               }),
 
-              // For non-admin users: show Accept / Decline buttons if meeting is UPCOMING and user has not acted
-              Obx(() {
-                // if (isUserAdminOrSuperAdmin) return const SizedBox.shrink();
-                final bool isDeviceEvent = meetingDetailsController
-                            .meetingDetails.value?.isDeviceEvent ==
-                        true ||
-                    widget.meeting.isDeviceEvent == true;
-                if (isDeviceEvent) return const SizedBox.shrink();
-                if (meetingStatus.value != 'UPCOMING')
-                  return const SizedBox.shrink();
+              // // For non-admin users: show Accept / Decline buttons if meeting is UPCOMING and user has not acted
+              // Obx(() {
+              //   // if (isUserAdminOrSuperAdmin) return const SizedBox.shrink();
+              //   final bool isDeviceEvent = meetingDetailsController
+              //               .meetingDetails.value?.isDeviceEvent ==
+              //           true ||
+              //       widget.meeting.isDeviceEvent == true;
+              //   if (isDeviceEvent) return const SizedBox.shrink();
+              //   if (meetingStatus.value != 'UPCOMING')
+              //     return const SizedBox.shrink();
 
-                final participantActions = meetingDetailsController
-                    .meetingDetails.value?.participantActions;
-                final userId = LocalStorage().getUserId();
-                final hasActed =
-                    participantActions?.any((pa) => pa.userId == userId) ==
-                        true;
-                if (hasActed) return const SizedBox.shrink();
+              //   final participantActions = meetingDetailsController
+              //       .meetingDetails.value?.participantActions;
+              //   final userId = LocalStorage().getUserId();
+              //   final hasActed =
+              //       participantActions?.any((pa) => pa.userId == userId) ==
+              //           true;
+              //   if (hasActed) return const SizedBox.shrink();
 
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.green,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 24, vertical: 12),
-                        ),
-                        onPressed: meetingDetailsController.isLoading.value
-                            ? null
-                            : () async {
-                                await meetingDetailsController
-                                    .acceptMeeting(widget.meeting.sId ?? '');
-                              },
-                        child: const Text(
-                          'Accept',
-                          style: TextStyle(
-                              color: AppColors.white,
-                              fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.red,
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 24, vertical: 12),
-                        ),
-                        onPressed: meetingDetailsController.isLoading.value
-                            ? null
-                            : () async {
-                                final reasonController =
-                                    TextEditingController();
-                                await showDialog(
-                                  context: context,
-                                  builder: (context) => AlertDialog(
-                                    title: const Text('Decline Meeting'),
-                                    content: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Text('Reason (optional)'),
-                                        const SizedBox(height: 8),
-                                        TextField(
-                                          controller: reasonController,
-                                          decoration: const InputDecoration(
-                                              border: OutlineInputBorder(),
-                                              hintText: 'Reason'),
-                                        ),
-                                      ],
-                                    ),
-                                    actions: [
-                                      TextButton(
-                                          onPressed: () {
-                                            Navigator.of(context).pop();
-                                          },
-                                          child: const Text('Cancel')),
-                                      TextButton(
-                                          onPressed: () async {
-                                            Navigator.of(context).pop();
-                                            await meetingDetailsController
-                                                .declineMeeting(
-                                                    widget.meeting.sId ?? '',
-                                                    reason:
-                                                        reasonController.text);
-                                          },
-                                          child: const Text('Decline',
-                                              style: TextStyle(
-                                                  color: AppColors.red)))
-                                    ],
-                                  ),
-                                );
-                              },
-                        child: const Text(
-                          'Decline',
-                          style: TextStyle(
-                              color: AppColors.white,
-                              fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              }),
+              //   return Padding(
+              //     padding: const EdgeInsets.symmetric(vertical: 8.0),
+              //     child: Row(
+              //       mainAxisAlignment: MainAxisAlignment.center,
+              //       children: [
+              //         ElevatedButton(
+              //           style: ElevatedButton.styleFrom(
+              //             backgroundColor: AppColors.green,
+              //             padding: const EdgeInsets.symmetric(
+              //                 horizontal: 24, vertical: 12),
+              //           ),
+              //           onPressed: meetingDetailsController.isLoading.value
+              //               ? null
+              //               : () async {
+              //                   await meetingDetailsController
+              //                       .acceptMeeting(widget.meeting.sId ?? '');
+              //                 },
+              //           child: const Text(
+              //             'Accept',
+              //             style: TextStyle(
+              //                 color: AppColors.white,
+              //                 fontWeight: FontWeight.w600),
+              //           ),
+              //         ),
+              //         const SizedBox(width: 16),
+              //         ElevatedButton(
+              //           style: ElevatedButton.styleFrom(
+              //             backgroundColor: AppColors.red,
+              //             padding: const EdgeInsets.symmetric(
+              //                 horizontal: 24, vertical: 12),
+              //           ),
+              //           onPressed: meetingDetailsController.isLoading.value
+              //               ? null
+              //               : () async {
+              //                   final reasonController =
+              //                       TextEditingController();
+              //                   await showDialog(
+              //                     context: context,
+              //                     builder: (context) => AlertDialog(
+              //                       title: const Text('Decline Meeting'),
+              //                       content: Column(
+              //                         mainAxisSize: MainAxisSize.min,
+              //                         children: [
+              //                           const Text('Reason (optional)'),
+              //                           const SizedBox(height: 8),
+              //                           TextField(
+              //                             controller: reasonController,
+              //                             decoration: const InputDecoration(
+              //                                 border: OutlineInputBorder(),
+              //                                 hintText: 'Reason'),
+              //                           ),
+              //                         ],
+              //                       ),
+              //                       actions: [
+              //                         TextButton(
+              //                             onPressed: () {
+              //                               Navigator.of(context).pop();
+              //                             },
+              //                             child: const Text('Cancel')),
+              //                         TextButton(
+              //                             onPressed: () async {
+              //                               Navigator.of(context).pop();
+              //                               await meetingDetailsController
+              //                                   .declineMeeting(
+              //                                       widget.meeting.sId ?? '',
+              //                                       reason:
+              //                                           reasonController.text);
+              //                             },
+              //                             child: const Text('Decline',
+              //                                 style: TextStyle(
+              //                                     color: AppColors.red)))
+              //                       ],
+              //                     ),
+              //                   );
+              //                 },
+              //           child: const Text(
+              //             'Decline',
+              //             style: TextStyle(
+              //                 color: AppColors.white,
+              //                 fontWeight: FontWeight.w600),
+              //           ),
+              //         ),
+              //       ],
+              //     ),
+              //   );
+              // }),
               const SizedBox(height: 20),
               Obx(() {
                 final callDetails = meetingsController.meetingCallDetails.value;

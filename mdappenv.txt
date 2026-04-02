@@ -1,0 +1,53 @@
+# It contains environment variables used for configuration.
+
+# Environment: production or development
+ENV='production' # e.g., production or development
+
+# Application name
+APP_NAME='CU'
+
+# Application logo URL
+APP_LOGO_LINK='https://your-domain.com/logo.svg'
+
+# Base URL for the API
+API_BASE_URL='http://13.51.47.108:10016'
+
+# Socket URL for WebSocket connections
+SOCKET_URL='http://13.51.47.108:10018'
+
+# STUN Server URL 
+# This is used for NAT traversal in WebRTC applications.
+# It helps in establishing peer-to-peer connections.
+# Toggle STUN/TURN usage for group call setup.
+# true/on/1 => use STUN+TURN and force relay policy.
+# false/off/0 => do not use configured STUN/TURN and allow all ICE candidates.
+USE_STUN_TURN=true
+
+STUN_URL=stun:142.93.74.226:3478
+
+TURN_URL_1=turn:142.93.74.226:3478
+TURN_URL_UDP=turn:142.93.74.226:3478?transport=udp
+TURN_URL_TCP=turn:142.93.74.226:3478?transport=tcp
+TURN_URL_2=turn:turn.cu-app.us
+TURN_URL_443_UDP=turn:turn.cu-app.us:443?transport=udp
+TURN_URL_443_TCP=turn:turn.cu-app.us:443?transport=tcp
+ 
+# TURN server credentials
+# These credentials are used to authenticate with the TURN server.
+TURN_USERNAME=cuapp_turn
+TURN_CREDENTIAL=TurnPass123!
+
+# WebRTC configuration
+SDP_SEMANTICS=unified-plan
+ICE_POOL_SIZE=0
+ICE_POLICY=all
+
+# iOS method channels
+IOS_AUDIO_METHOD_CHANNEL=com.excellisit.cuapp/audiomode
+IOS_NAVIGATION_METHOD_CHANNEL=com.excellisit.cuapp/navigation
+
+MEDIASOUP_ANNOUNCED_IP=13.51.47.108
+
+# MEDIASOUP_SOCKET_URL=http://13.51.47.108:10018
+
+# ice 134.199.249.149

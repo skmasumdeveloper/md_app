@@ -10,6 +10,10 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
+import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
+
+import '../../../Commons/app_colors.dart';
+import '../../../Commons/app_images.dart';
 
 class GroupCallEmbededScreen extends StatefulWidget {
   final String roomId;
@@ -34,6 +38,37 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
   late final GroupCallEmbededController _controller;
   late final WebViewController _web;
   bool _isMovingToOverlay = false;
+
+  void _showRecordingComingSoon() {
+    if (!mounted || Get.context == null) {
+      return;
+    }
+
+    if (Get.isSnackbarOpen) {
+      Get.closeCurrentSnackbar();
+    }
+
+    Get.rawSnackbar(
+      snackStyle: SnackStyle.FLOATING,
+      snackPosition: SnackPosition.TOP,
+      backgroundColor: const Color(0xFFD2DD90),
+      borderRadius: 12,
+      margin: const EdgeInsets.all(12),
+      messageText: const Row(
+        children: [
+          Icon(Icons.fiber_manual_record, color: Colors.black87, size: 16),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Screen recording is coming soon.',
+              style: TextStyle(color: Colors.black87),
+            ),
+          ),
+        ],
+      ),
+      duration: const Duration(seconds: 2),
+    );
+  }
 
   void _log(String stage, [Map<String, dynamic>? details]) {
     if (details == null || details.isEmpty) {
@@ -75,7 +110,17 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
       _web = existingWebController;
     } else {
       _log('create-new-webview');
-      final params = PlatformWebViewControllerCreationParams();
+
+      late final PlatformWebViewControllerCreationParams params;
+      if (Platform.isIOS) {
+        params = WebKitWebViewControllerCreationParams(
+          allowsInlineMediaPlayback: true,
+          mediaTypesRequiringUserAction: const <PlaybackMediaTypes>{},
+        );
+      } else {
+        params = const PlatformWebViewControllerCreationParams();
+      }
+
       _web = WebViewController.fromPlatformCreationParams(params)
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
         ..setBackgroundColor(const Color(0xFF070B14))
@@ -218,27 +263,78 @@ class _GroupCallEmbededScreenState extends State<GroupCallEmbededScreen>
         await _enterInAppOverlay();
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFF070B14),
+        backgroundColor: Colors.transparent,
         appBar: AppBar(
-          backgroundColor: const Color(0xFF070B14),
+          elevation: 0,
+          centerTitle: false,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.white),
+            onPressed: () => _enterInAppOverlay(),
+          ),
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: _showRecordingComingSoon,
+                child: Container(
+                  height: 34,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppColors.primary),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.fiber_manual_record,
+                        color: Color.fromARGB(255, 46, 46, 46),
+                        size: 10,
+                      ),
+                      SizedBox(width: 6),
+                      Text(
+                        'Start REC',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+          flexibleSpace: Container(
+            decoration: const BoxDecoration(gradient: AppColors.appBarGradient),
+            child: Padding(
+              padding: const EdgeInsets.only(top: 30),
+              child: SizedBox(
+                width: 100,
+                height: 100,
+                child: Container(
+                  decoration: const BoxDecoration(
+                    image: DecorationImage(
+                      image: AssetImage(AppImages.appLogoWhite),
+                      fit: BoxFit.contain,
+                      opacity: 0.2,
+                      filterQuality: FilterQuality.high,
+                      alignment: Alignment.center,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
           title: Text(widget.isMeeting
               ? '${widget.groupName.isNotEmpty ? widget.groupName : 'Group Call'} (Meeting)'
               : (widget.groupName.isNotEmpty
                   ? widget.groupName
                   : 'Group Call')),
-          centerTitle: true,
-          actions: [
-            Obx(() => Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Center(
-                    child: Text(
-                      _controller.callState.value,
-                      style:
-                          const TextStyle(fontSize: 12, color: Colors.white70),
-                    ),
-                  ),
-                )),
-          ],
         ),
         body: SafeArea(
           child: Column(
@@ -346,13 +442,13 @@ class _ActionButton extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(28),
       child: Container(
-        width: 56,
-        height: 56,
+        width: 50,
+        height: 50,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: danger
               ? const Color(0xFFE53935)
-              : (active ? const Color(0xFF0EA5E9) : const Color(0xFF334155)),
+              : (active ? AppColors.primary : const Color(0xFF334155)),
           boxShadow: const [
             BoxShadow(
               color: Color(0x33000000),

@@ -11,7 +11,7 @@ import 'package:cu_app/Features/Meetings/Repository/meetings_repo.dart';
 import 'package:cu_app/Features/Meetings/Presentation/meeting_details_screen.dart';
 import '../../../Utils/app_preference.dart';
 import '../../../Widgets/toast_widget.dart';
-import '../../Group_Call/controller/group_call.dart';
+import '../../Group_Call_old/controller/group_call.dart';
 import '../../Home/Controller/socket_controller.dart';
 import '../Model/user_profle_model.dart';
 

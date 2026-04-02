@@ -45,6 +45,8 @@
 	<string>$(PRODUCT_NAME) Microphone Usage!</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Choose photo from Library to send in a group</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>This app needs permission to save recordings and media to your photo library.</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>This app needs access to your calendar to sync meetings and add events.</string>
 	<key>NSPushNotificationUsageDescription</key>
@@ -95,6 +97,10 @@
 		<!-- allow the app's view to be used as Picture‑in‑Picture target -->
 	<key>UISupportsPictureInPicture</key>
 	<true/>
+	<key>NSAllowsArbitraryLoads</key>
+    <true/>
+
+	
 
 </dict>
 </plist>

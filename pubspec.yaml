@@ -1,9 +1,9 @@
 name: cu_app
 description: Modern Group Chat Application.
-publish_to: "none"
+publish_to: 'none'
 build_app_name: CU_App
 
-version: 1.0.76+76
+version: 1.0.82+82
 
 environment:
   sdk: ">=3.5.4 <4.0.0"
@@ -87,6 +87,15 @@ dependencies:
   flutter_timezone: ^5.0.1
   webview_flutter: ^4.13.0
   webview_flutter_android: ^4.10.5
+  webview_flutter_wkwebview: ^3.24.2
+  no_screenshot: ^1.0.0
+  gal: ^2.3.2
+
+
+
+
+
+
 
 flutter_launcher_icons:
   android: true

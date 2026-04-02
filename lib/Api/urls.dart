@@ -70,4 +70,5 @@ class EndPoints {
   static const deleteMessage = "/groups/deletemsg";
   static const addGuestMessage = "/groups/add-guest-message";
   static const getGuestMessages = "/groups/get-guest-messages";
+  static const ongoingRecording = "/groups/recordings/ongoing";
 }

@@ -431,37 +431,37 @@ class _MeetingsListScreenState extends State<MeetingsListScreen> {
                     // ),
                     Expanded(child: Container()),
                     // Copy & Share invite buttons
-                    if (meeting.link != null && meeting.link!.isNotEmpty) ...[
-                      IconButton(
-                        icon: const Icon(Icons.copy,
-                            size: 20, color: AppColors.primary),
-                        tooltip: 'Copy invite',
-                        constraints: const BoxConstraints(),
-                        padding: const EdgeInsets.all(8),
-                        onPressed: () async {
-                          await InviteUtils.copyInviteToClipboard(
-                            context: context,
-                            link: meeting.link ?? '',
-                            pin: meeting.pin ?? '',
-                            meetingStartTime: meeting.meetingStartTime,
-                          );
-                        },
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.share,
-                            size: 20, color: AppColors.primary),
-                        tooltip: 'Share invite',
-                        constraints: const BoxConstraints(),
-                        padding: const EdgeInsets.all(8),
-                        onPressed: () async {
-                          await InviteUtils.shareInvite(
-                            link: meeting.link ?? '',
-                            pin: meeting.pin ?? '',
-                            meetingStartTime: meeting.meetingStartTime,
-                          );
-                        },
-                      ),
-                    ],
+                    // if (meeting.link != null && meeting.link!.isNotEmpty) ...[
+                    //   IconButton(
+                    //     icon: const Icon(Icons.copy,
+                    //         size: 20, color: AppColors.primary),
+                    //     tooltip: 'Copy invite',
+                    //     constraints: const BoxConstraints(),
+                    //     padding: const EdgeInsets.all(8),
+                    //     onPressed: () async {
+                    //       await InviteUtils.copyInviteToClipboard(
+                    //         context: context,
+                    //         link: meeting.link ?? '',
+                    //         pin: meeting.pin ?? '',
+                    //         meetingStartTime: meeting.meetingStartTime,
+                    //       );
+                    //     },
+                    //   ),
+                    //   IconButton(
+                    //     icon: const Icon(Icons.share,
+                    //         size: 20, color: AppColors.primary),
+                    //     tooltip: 'Share invite',
+                    //     constraints: const BoxConstraints(),
+                    //     padding: const EdgeInsets.all(8),
+                    //     onPressed: () async {
+                    //       await InviteUtils.shareInvite(
+                    //         link: meeting.link ?? '',
+                    //         pin: meeting.pin ?? '',
+                    //         meetingStartTime: meeting.meetingStartTime,
+                    //       );
+                    //     },
+                    //   ),
+                    // ],
 
                     if (meetingStatus == 'ONGOING')
                       ElevatedButton.icon(

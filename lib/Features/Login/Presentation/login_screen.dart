@@ -3,7 +3,6 @@ import 'package:cu_app/Commons/app_images.dart';
 import 'package:cu_app/Commons/app_theme_colors.dart';
 import 'package:cu_app/Features/Forget_password/Controller/forget_password_controller.dart';
 import 'package:cu_app/Features/Login/Controller/login_controller.dart';
-import 'package:cu_app/Features/GuestMeetingManage/presentation/guest_meeting_pin_screen.dart';
 import 'package:cu_app/Widgets/custom_text_field.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -25,37 +24,54 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     final colors = context.appColors;
     return Scaffold(
-      body: Container(
-        width: double.infinity,
-        height: double.infinity,
-        decoration: const BoxDecoration(
-          image: DecorationImage(
-            image: AssetImage(AppImages.loginBack),
-            fit: BoxFit.cover,
+      body: Column(
+        children: [
+          Expanded(
+            flex: 7,
+            child: Container(
+              width: double.infinity,
+              decoration: const BoxDecoration(
+                image: DecorationImage(
+                  image: AssetImage(AppImages.welcomeBg),
+                  fit: BoxFit.cover,
+                ),
+              ),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Image.asset(
+                      AppImages.appLogo,
+                      height: 160,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Connecting Your Team',
+                      style: Theme.of(context).textTheme.bodyLarge!.copyWith(
+                            color: colors.textSecondary,
+                            fontWeight: FontWeight.w400,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
-        ),
-        child: Center(
-          child: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Image.asset(
-                    AppImages.appLogo,
-                    // width: 200,
-                    height: 120,
+          Expanded(
+            flex: 6,
+            child: Container(
+              width: double.infinity,
+              color: Theme.of(context).scaffoldBackgroundColor,
+              child: SafeArea(
+                top: false,
+                child: SingleChildScrollView(
+                  padding: EdgeInsets.fromLTRB(
+                    20,
+                    24,
+                    20,
+                    24 + MediaQuery.of(context).viewInsets.bottom,
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Connecting Your Team',
-                    style: Theme.of(context).textTheme.bodyLarge!.copyWith(
-                          color: colors.textSecondary,
-                          fontWeight: FontWeight.w400,
-                        ),
-                  ),
-                  const SizedBox(height: 40),
-                  Container(
+                  child: Container(
                     padding: const EdgeInsets.all(20),
                     decoration: BoxDecoration(
                       color: colors.loginBg,
@@ -237,11 +253,11 @@ class _LoginScreenState extends State<LoginScreen> {
                       ],
                     ),
                   ),
-                ],
+                ),
               ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }

@@ -227,7 +227,8 @@ class MeetingListItem extends StatelessWidget {
                           .toLowerCase();
                       final bool accepted =
                           action == 'accept' || action == 'accepted';
-                      final Color bg = accepted ? AppColors.green : AppColors.red;
+                      final Color bg =
+                          accepted ? AppColors.green : AppColors.red;
                       final IconData icon =
                           accepted ? Icons.check_circle : Icons.cancel;
                       final String label = accepted ? 'ACCEPTED' : 'REJECTED';

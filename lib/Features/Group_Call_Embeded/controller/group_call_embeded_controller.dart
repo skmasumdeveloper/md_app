@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'package:audio_session/audio_session.dart';
 import 'package:cu_app/Api/urls.dart';
 import 'package:cu_app/Commons/platform_channels.dart';
-import 'package:cu_app/Features/Group_Call/controller/group_call_turn.dart';
+import 'package:cu_app/Features/Group_Call_old/controller/group_call_turn.dart';
 import 'package:cu_app/Features/Home/Model/group_list_model.dart';
 import 'package:cu_app/Features/Home/Repository/group_repo.dart';
 import 'package:cu_app/Utils/storage_service.dart';
@@ -42,6 +42,8 @@ class GroupCallEmbededController extends GetxController {
   Worker? _systemPipWorker;
   String _desiredViewMode = 'normal';
   String _lastSentViewMode = '';
+  final Map<String, Map<String, dynamic>> _queuedWebActions =
+      <String, Map<String, dynamic>>{};
 
   void _log(String stage, [Map<String, dynamic>? details]) {
     if (!_verboseLogs) {
@@ -113,6 +115,8 @@ class GroupCallEmbededController extends GetxController {
       await _sendToWeb('bootstrap', payload);
       await syncEmbeddedViewMode(force: true);
     }
+
+    await _flushQueuedWebActions();
   }
 
   Future<void> setCompactMode(bool enabled, {bool force = false}) async {
@@ -214,6 +218,7 @@ class GroupCallEmbededController extends GetxController {
     isInOverlayMode.value = false;
     _desiredViewMode = 'normal';
     _lastSentViewMode = '';
+    _queuedWebActions.clear();
     remoteAudioEnabled.clear();
 
     EmbeddedCallOverlayManager().remove();
@@ -304,6 +309,7 @@ class GroupCallEmbededController extends GetxController {
     isInOverlayMode.value = false;
     _desiredViewMode = 'normal';
     _lastSentViewMode = '';
+    _queuedWebActions.clear();
     EmbeddedCallOverlayManager().remove();
 
     isConnecting.value = true;
@@ -322,8 +328,10 @@ class GroupCallEmbededController extends GetxController {
       if (!granted) {
         callState.value = 'permission_denied';
         isConnecting.value = false;
-        Get.snackbar('Permission required',
-            'Camera and microphone permissions are required to start the call.');
+        final permissionMessage = isVideoCall
+            ? 'Camera and microphone permissions are required to start the call.'
+            : 'Microphone permission is required to start the call.';
+        Get.snackbar('Permission required', permissionMessage);
         return;
       }
 
@@ -500,6 +508,7 @@ class GroupCallEmbededController extends GetxController {
 
     final controller = _webViewController;
     if (controller == null) {
+      _queueActionIfNeeded(action, payload, reason: 'no-controller');
       _log('_sendToWeb:skip', {
         'action': action,
         'reason': 'no-controller',
@@ -509,6 +518,7 @@ class GroupCallEmbededController extends GetxController {
 
     final completer = _pageReadyCompleter;
     if (completer == null || !completer.isCompleted) {
+      _queueActionIfNeeded(action, payload, reason: 'page-not-ready');
       _log('_sendToWeb:skip', {
         'action': action,
         'reason': 'page-not-ready',
@@ -522,22 +532,94 @@ class GroupCallEmbededController extends GetxController {
         .replaceAll("'", r"\\'")
         .replaceAll('\n', r'\\n');
 
-    await controller.runJavaScript(
-      "window.CU_EMBEDDED && window.CU_EMBEDDED.receiveFromFlutter && window.CU_EMBEDDED.receiveFromFlutter('$escaped');",
-    );
+    try {
+      await controller.runJavaScript(
+        "window.CU_EMBEDDED && window.CU_EMBEDDED.receiveFromFlutter && window.CU_EMBEDDED.receiveFromFlutter('$escaped');",
+      );
+    } catch (e) {
+      _queueActionIfNeeded(action, payload, reason: 'run-javascript-error');
+      _log('_sendToWeb:error', {
+        'action': action,
+        'error': e.toString(),
+      });
+      return;
+    }
 
     _log('_sendToWeb:sent', {'action': action});
   }
 
-  Future<bool> _requestMediaPermission({required bool isVideoCall}) async {
-    final mic = await Permission.microphone.request();
-    if (!mic.isGranted) {
-      return false;
+  bool _isQueueableAction(String action) {
+    switch (action) {
+      case 'toggleMic':
+      case 'toggleCamera':
+      case 'toggleSpeaker':
+      case 'switchCamera':
+      case 'setViewMode':
+      case 'reconnect':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  void _queueActionIfNeeded(String action, Map<String, dynamic> payload,
+      {required String reason}) {
+    if (!_isQueueableAction(action)) {
+      return;
     }
 
-    if (isVideoCall) {
-      final cam = await Permission.camera.request();
-      if (!cam.isGranted) {
+    _queuedWebActions[action] = Map<String, dynamic>.from(payload);
+    _log('_sendToWeb:queued', {
+      'action': action,
+      'reason': reason,
+      'queuedCount': _queuedWebActions.length,
+    });
+  }
+
+  Future<void> _flushQueuedWebActions() async {
+    if (_queuedWebActions.isEmpty) {
+      return;
+    }
+
+    final entries = _queuedWebActions.entries
+        .map((e) => MapEntry(e.key, Map<String, dynamic>.from(e.value)))
+        .toList();
+    _queuedWebActions.clear();
+
+    _log('_flushQueuedWebActions', {
+      'count': entries.length,
+      'actions': entries.map((e) => e.key).toList(),
+    });
+
+    for (final entry in entries) {
+      await _sendToWeb(entry.key, entry.value);
+    }
+  }
+
+  Future<bool> _requestMediaPermission({required bool isVideoCall}) async {
+    final requiredPermissions = <Permission>[
+      Permission.microphone,
+      if (isVideoCall) Permission.camera,
+    ];
+
+    for (final permission in requiredPermissions) {
+      final currentStatus = await permission.status;
+      _log('_requestMediaPermission:before', {
+        'permission': permission.toString(),
+        'status': currentStatus.toString(),
+      });
+
+      if (currentStatus.isGranted) {
+        continue;
+      }
+
+      final requestedStatus = await permission.request();
+      _log('_requestMediaPermission:after', {
+        'permission': permission.toString(),
+        'status': requestedStatus.toString(),
+      });
+
+      if (!requestedStatus.isGranted) {
         return false;
       }
     }

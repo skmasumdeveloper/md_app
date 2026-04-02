@@ -6,7 +6,9 @@ import 'dart:convert';
 import 'package:cu_app/Commons/app_strings.dart';
 import 'package:cu_app/Features/Group_Call_Embeded/controller/group_call_embeded_controller.dart';
 import 'package:cu_app/Features/Group_Call_Embeded/group_call_embeded_config.dart';
-import 'package:cu_app/Features/Group_Call/controller/group_call.dart';
+import 'package:cu_app/Features/Group_Call_New/controller/group_call_new_controller.dart';
+import 'package:cu_app/Features/Group_Call_New/group_call_new_config.dart';
+import 'package:cu_app/Features/Group_Call_old/controller/group_call.dart';
 
 import 'package:cu_app/Utils/dismis_keyboard.dart';
 import 'package:cu_app/global_bloc.dart';
@@ -22,6 +24,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_inapp_notifications/flutter_inapp_notifications.dart';
 import 'package:get/get.dart';
 import 'package:get_storage/get_storage.dart';
+import 'package:no_screenshot/no_screenshot.dart';
 import 'package:overlay_support/overlay_support.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -150,6 +153,9 @@ Future<void> main() async {
   NativeCallHandler.initChannel();
   PlatformChannels.initScreenCaptureListener();
   WakelockPlus.enable();
+  final noScreenshot = NoScreenshot.instance;
+  await noScreenshot.screenshotOff();
+
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
@@ -172,6 +178,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   String? _currentUuid;
   String textEvents = "";
 
+  /// Cached call data from the last accepted CallKit event (iOS fallback).
+  Map<String, dynamic>? _lastAcceptedCallData;
+
   late final FirebaseMessaging _firebaseMessaging;
   final groupListController = Get.put(GroupListController());
 
@@ -186,7 +195,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     listenerEvent(onEvent);
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (!GroupCallEmbededConfig.enabled) {
+      if (GroupCallNewConfig.enabled) {
+        Get.put(GroupCallNewController());
+      } else if (!GroupCallEmbededConfig.enabled) {
         Get.put(GroupcallController());
       }
       _getupToken();
@@ -233,7 +244,15 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             break;
           case Event.actionCallAccept:
             //  accepted an incoming call
-            //  show screen calling in Flutter
+            //  Cache the call data from the event for iOS fallback
+            try {
+              final body = event.body;
+              if (body is Map) {
+                _lastAcceptedCallData = Map<String, dynamic>.from(body);
+                debugPrint(
+                    '[CallKit] actionCallAccept cached data: $_lastAcceptedCallData');
+              }
+            } catch (_) {}
             Future.delayed(const Duration(milliseconds: 350), () {
               checkAndNavigationCallingPage();
             });
@@ -301,8 +320,27 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   Future<void> checkAndNavigationCallingPage() async {
     try {
       var currentCall = await getCurrentCall();
+
+      // iOS fallback: if getCurrentCall returns null but we have cached data
+      // from the CallKit accept event, use that instead.
+      if (currentCall == null && _lastAcceptedCallData != null) {
+        debugPrint('[CallKit] Using cached accept data as fallback');
+        currentCall = {
+          'accepted': true,
+          'extra': _lastAcceptedCallData!['extra'] ?? _lastAcceptedCallData,
+          'id': _lastAcceptedCallData!['id'] ?? '',
+        };
+      }
+
       if (currentCall != null) {
-        final callType = currentCall['extra']['callType'];
+        final extra = currentCall['extra'];
+        if (extra == null || extra is! Map) {
+          debugPrint('[CallKit] No extra data in call, skipping');
+          _lastAcceptedCallData = null;
+          await FlutterCallkitIncoming.endAllCalls();
+          return;
+        }
+        final callType = extra['callType'];
         if (currentCall['accepted'] == true) {
           Future.delayed(const Duration(milliseconds: 2000), () async {
             final currentRoute = Get.currentRoute;
@@ -313,7 +351,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
               final GroupcallController? groupcallController =
                   Get.isRegistered<GroupcallController>()
                       ? Get.find<GroupcallController>()
-                      : (GroupCallEmbededConfig.enabled
+                      : (GroupCallEmbededConfig.enabled ||
+                              GroupCallNewConfig.enabled
                           ? null
                           : Get.put(GroupcallController()));
               Future.delayed(const Duration(seconds: 1), () {
@@ -325,12 +364,21 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                           : Get.put(GroupCallEmbededController());
                 }
 
+                GroupCallNewController? newCallController;
+                if (GroupCallNewConfig.enabled) {
+                  newCallController = Get.isRegistered<GroupCallNewController>()
+                      ? Get.find<GroupCallNewController>()
+                      : Get.put(GroupCallNewController());
+                }
+
                 // guard against duplicated navigation
                 if ((groupcallController?.isCallActive.value == true) ||
                     (embeddedController?.isCallActive.value == true) ||
+                    (newCallController?.isCallActive.value == true) ||
                     (groupcallController?.isNavigatingToCall == true) ||
                     Get.currentRoute.contains('GroupVideoCallScreen') ||
-                    Get.currentRoute.contains('GroupCallEmbededScreen')) {
+                    Get.currentRoute.contains('GroupCallEmbededScreen') ||
+                    Get.currentRoute.contains('GroupCallNewScreen')) {
                   return;
                 }
 
@@ -339,7 +387,15 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                 final localUserName =
                     (GetStorage().read('userName') ?? '').toString();
 
-                if (GroupCallEmbededConfig.enabled &&
+                if (GroupCallNewConfig.enabled && newCallController != null) {
+                  unawaited(newCallController.joinCall(
+                    roomId: currentCall['extra']['groupId'],
+                    userName: localUserId,
+                    userFullName: localUserName,
+                    context: context,
+                    isVideoCall: callType == 'video' ? true : false,
+                  ));
+                } else if (GroupCallEmbededConfig.enabled &&
                     embeddedController != null) {
                   unawaited(embeddedController.joinCall(
                     roomId: currentCall['extra']['groupId'],
@@ -366,10 +422,12 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
               );
             }
 
-            // End the call in CallKit UI
+            // End the call in CallKit UI and clear cached data
+            _lastAcceptedCallData = null;
             await FlutterCallkitIncoming.endCall(currentCall['id']);
           });
         } else {
+          _lastAcceptedCallData = null;
           await FlutterCallkitIncoming.endAllCalls();
         }
       } else {

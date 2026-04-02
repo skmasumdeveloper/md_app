@@ -1,4 +1,8 @@
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:cu_app/Features/Chat/Controller/chat_controller.dart';
+import 'package:cu_app/Features/Group_Call_New/controller/group_call_new_controller.dart';
+import 'package:cu_app/Features/Home/Controller/group_list_controller.dart';
+import 'package:cu_app/Features/Home/Controller/socket_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
@@ -8,6 +12,18 @@ class MainNetworkController extends GetxController {
 
   RxBool isInternetConnected = true.obs;
   RxBool isBottomSheetOpen = false.obs;
+
+  /// Check if a new group call is active — call screen handles its own network.
+  bool get _isNewCallScreenActive {
+    try {
+      if (Get.isRegistered<GroupCallNewController>()) {
+        final c = Get.find<GroupCallNewController>();
+        if (c.isCallActive.value || c.isAnyCallActive.value) return true;
+      }
+      if (Get.currentRoute.contains('GroupCallNewScreen')) return true;
+    } catch (_) {}
+    return false;
+  }
 
   @override
   void onInit() {
@@ -25,10 +41,16 @@ class MainNetworkController extends GetxController {
             }
             isBottomSheetOpen(false);
           }
+          // Refresh app data when internet comes back
+          _refreshOnReconnect();
         }
       } else if (result.contains(ConnectivityResult.none)) {
         if (isInternetConnected.value) {
           isInternetConnected(false);
+
+          // Don't show "No Internet" bottom sheet during a call —
+          // the call module handles its own network-based call ending.
+          if (_isNewCallScreenActive) return;
 
           if (!isBottomSheetOpen.value) {
             isBottomSheetOpen(true);
@@ -37,6 +59,42 @@ class MainNetworkController extends GetxController {
         }
       }
     });
+  }
+
+  /// Refresh groups, chats, socket, and active call state when internet comes back.
+  void _refreshOnReconnect() {
+    debugPrint('[NetworkController] Internet reconnected — refreshing app data');
+
+    // Reconnect socket
+    try {
+      if (Get.isRegistered<SocketController>()) {
+        Get.find<SocketController>().reconnectSocket();
+      }
+    } catch (_) {}
+
+    // Refresh group list
+    try {
+      if (Get.isRegistered<GroupListController>()) {
+        Get.find<GroupListController>().getGroupList(isLoadingShow: false);
+      }
+    } catch (_) {}
+
+    // Refresh chat messages and check active call if on chat screen
+    try {
+      if (Get.isRegistered<ChatController>()) {
+        final chatCtrl = Get.find<ChatController>();
+        if (chatCtrl.isChatScreen.value && chatCtrl.groupId.value.isNotEmpty) {
+          chatCtrl.getAllChatByGroupId(
+            groupId: chatCtrl.groupId.value,
+            isShowLoading: false,
+          );
+          chatCtrl.checkActiveCall(
+            chatCtrl.groupId.value,
+            isShowLoading: false,
+          );
+        }
+      }
+    } catch (_) {}
   }
 
   void _showNoInternetBottomSheet() {

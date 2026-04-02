@@ -21,8 +21,8 @@ import '../../../Widgets/custom_text_field.dart';
 import '../../../Widgets/responsive.dart';
 import '../../../Widgets/shimmer_effetct.dart';
 import '../../Chat/Presentation/chat_screen.dart';
-import '../../Group_Call/Presentation/video_call_screen.dart';
-import '../../Group_Call/controller/group_call.dart';
+import '../../Group_Call_old/Presentation/video_call_screen.dart';
+import '../../Group_Call_old/controller/group_call.dart';
 import '../../Login/Controller/login_controller.dart';
 import 'package:cu_app/Utils/storage_service.dart';
 

@@ -12,7 +12,7 @@ import '../../../Commons/app_images.dart';
 import '../../../Utils/safe_cached_image.dart';
 import '../../../Utils/storage_service.dart';
 import '../../../Widgets/custom_confirmation_dialog.dart';
-import '../../Group_Call/controller/group_call.dart';
+import '../../Group_Call_old/controller/group_call.dart';
 import '../../Home/Controller/socket_controller.dart';
 import '../../Login/Presentation/login_screen.dart';
 import '../../Navigation/Controller/navigation_controller.dart';

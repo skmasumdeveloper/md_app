@@ -9,7 +9,9 @@ import 'package:cu_app/Features/Chat/Widget/receiver_tile.dart';
 import 'package:cu_app/Features/Chat/Widget/sender_tile.dart';
 import 'package:cu_app/Features/Group_Call_Embeded/controller/group_call_embeded_controller.dart';
 import 'package:cu_app/Features/Group_Call_Embeded/group_call_embeded_config.dart';
-import 'package:cu_app/Features/Group_Call/controller/group_call.dart';
+import 'package:cu_app/Features/Group_Call_New/controller/group_call_new_controller.dart';
+import 'package:cu_app/Features/Group_Call_New/group_call_new_config.dart';
+import 'package:cu_app/Features/Group_Call_old/controller/group_call.dart';
 import 'package:cu_app/Features/GroupInfo/Presentation/group_info_screen.dart';
 import 'package:cu_app/Features/Home/Controller/group_list_controller.dart';
 import 'package:cu_app/Features/Home/Controller/socket_controller.dart';
@@ -27,6 +29,7 @@ import 'package:shimmer/shimmer.dart';
 import '../../../Utils/datetime_utils.dart';
 import '../../../Widgets/custom_smartrefresher_fotter.dart';
 import '../../../Commons/app_theme_colors.dart';
+import '../../Group_Call_New/controller/call_logger.dart';
 import '../Widget/send_message_widget.dart';
 import '../Widget/show_member_widget.dart';
 import '../Widget/personal_info.dart';
@@ -54,7 +57,7 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 //  final ScrollController _scrollController = ScrollController();
   final chatController = Get.put(ChatController());
   final groupListController = Get.put(GroupListController());
@@ -64,8 +67,91 @@ class _ChatScreenState extends State<ChatScreen> {
 
   final groupcallController = Get.put(GroupcallController());
   final groupCallEmbededController = Get.put(GroupCallEmbededController());
+  Timer? _activeCallSyncTimer;
+  Worker? _legacyCallStateWorker;
+  Worker? _embeddedCallStateWorker;
+  Worker? _newCallStateWorker;
+  bool _isSyncingActiveCall = false;
+
+  Future<void> _refreshActiveCallState({bool showLoading = false}) async {
+    if (!mounted || widget.groupId.isEmpty || _isSyncingActiveCall) {
+      return;
+    }
+
+    _isSyncingActiveCall = true;
+    try {
+      await chatController.checkActiveCall(
+        widget.groupId,
+        isShowLoading: showLoading,
+      );
+    } finally {
+      _isSyncingActiveCall = false;
+    }
+  }
+
+  void _startActiveCallSyncTimer() {
+    _activeCallSyncTimer?.cancel();
+    _activeCallSyncTimer = Timer.periodic(const Duration(seconds: 8), (_) {
+      if (!mounted || !chatController.isChatScreen.value) {
+        return;
+      }
+      unawaited(_refreshActiveCallState());
+    });
+  }
+
+  /// Refresh chat screen after a call ends — messages, call state, group list.
+  /// Runs immediately and again after 5 seconds for safety (recording may still be processing).
+  void _refreshAfterCallEnd() {
+    if (!mounted) return;
+
+    unawaited(_refreshActiveCallState(showLoading: true));
+    chatController.getAllChatByGroupId(
+      groupId: widget.groupId,
+      isShowLoading: false,
+    );
+    groupListController.getGroupList(isLoadingShow: false);
+
+    // Safety refresh after 5 seconds (recording processing may complete)
+    Future.delayed(const Duration(seconds: 5), () {
+      if (!mounted) return;
+      unawaited(_refreshActiveCallState(showLoading: false));
+      chatController.getAllChatByGroupId(
+        groupId: widget.groupId,
+        isShowLoading: false,
+      );
+      // log
+      CallLogger.info('ChatScreen', '_refreshAfterCallEnd:delayedRefresh', {
+        'groupId': widget.groupId,
+      });
+    });
+
+    // Double safety refresh after 5 seconds (recording processing may complete)
+    Future.delayed(const Duration(seconds: 5), () {
+      if (!mounted) return;
+      unawaited(_refreshActiveCallState(showLoading: false));
+      chatController.getAllChatByGroupId(
+        groupId: widget.groupId,
+        isShowLoading: false,
+      );
+      // log
+      CallLogger.info('ChatScreen', '_refreshAfterCallEnd:delayedRefresh2', {
+        'groupId': widget.groupId,
+      });
+    });
+  }
 
   void _startPreferredGroupCall({required bool isVideoCall}) {
+    if (GroupCallNewConfig.enabled) {
+      final newCallCtrl = Get.isRegistered<GroupCallNewController>()
+          ? Get.find<GroupCallNewController>()
+          : Get.put(GroupCallNewController());
+      newCallCtrl.outgoingCallEmit(
+        widget.groupId,
+        isVideoCall: isVideoCall,
+      );
+      return;
+    }
+
     if (GroupCallEmbededConfig.enabled) {
       groupCallEmbededController.outgoingCallEmit(
         widget.groupId,
@@ -96,13 +182,42 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
+    _legacyCallStateWorker =
+        ever<bool>(groupcallController.isCallActive, (isActive) {
+      if (!isActive) {
+        unawaited(_refreshActiveCallState(showLoading: true));
+      }
+    });
+
+    _embeddedCallStateWorker =
+        ever<bool>(groupCallEmbededController.isCallActive, (isActive) {
+      if (!isActive) {
+        unawaited(_refreshActiveCallState(showLoading: true));
+      }
+    });
+
+    // Watch new call module state changes
+    if (Get.isRegistered<GroupCallNewController>()) {
+      final newCallCtrl = Get.find<GroupCallNewController>();
+      _newCallStateWorker = ever<bool>(newCallCtrl.isCallActive, (isActive) {
+        if (!isActive) {
+          // Refresh call state, chat messages, and group list
+          _refreshAfterCallEnd();
+        }
+      });
+    }
+
+    _startActiveCallSyncTimer();
+
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
       chatController.groupId.value = widget.groupId;
       chatController.isChatScreen.value = true;
       chatController.limit.value = 100;
       chatController.getGroupDetailsById(
           groupId: widget.groupId, timeStamp: chatController.timeStamps.value);
-      chatController.checkActiveCall(widget.groupId);
+      unawaited(_refreshActiveCallState(showLoading: true));
       chatController.msgController.value.clear();
       chatController.isMemberSuggestion.value = false;
       widget.isCallFloating == 1 ? null : chatController.chatList.clear();
@@ -136,7 +251,7 @@ class _ChatScreenState extends State<ChatScreen> {
             if (groupcallController.isIncomingCallScreenOpen.value &&
                 mounted) {}
 
-            chatController.checkActiveCall(widget.groupId);
+            unawaited(_refreshActiveCallState(showLoading: true));
 
             groupListController.getGroupList(isLoadingShow: false);
           }
@@ -150,10 +265,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
         Future.delayed(const Duration(seconds: 1), () {
           // avoid duplicate outgoing call emit if already navigating or call is active
+          final newCallActive = Get.isRegistered<GroupCallNewController>() &&
+              Get.find<GroupCallNewController>().isCallActive.value;
           if (groupcallController.isCallActive.value ||
               groupcallController.isNavigatingToCall ||
+              newCallActive ||
               Get.currentRoute.contains('GroupVideoCallScreen') ||
-              Get.currentRoute.contains('GroupCallEmbededScreen')) {
+              Get.currentRoute.contains('GroupCallEmbededScreen') ||
+              Get.currentRoute.contains('GroupCallNewScreen')) {
             return;
           }
 
@@ -166,19 +285,35 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   @override
-  dispose() {
-    super.dispose();
-    WidgetsBinding.instance.addPostFrameCallback((t) {
-      chatController.isChatScreen.value = false;
-      chatController.msgController.value.clear();
-      chatController.isMemberSuggestion.value = false;
-      widget.isCallFloating == 1 ? null : chatController.chatList.clear();
-      chatController.groupId.value = "";
-      if (widget.index != null && widget.index! >= 0) {
-        groupListController.groupList[widget.index!].unreadCount = 0;
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshActiveCallState(showLoading: true));
+    }
+  }
+
+  @override
+  void dispose() {
+    _activeCallSyncTimer?.cancel();
+    _legacyCallStateWorker?.dispose();
+    _embeddedCallStateWorker?.dispose();
+    _newCallStateWorker?.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    socketController.socket?.off("FE-call-ended");
+
+    chatController.isChatScreen.value = false;
+    chatController.msgController.value.clear();
+    chatController.isMemberSuggestion.value = false;
+    widget.isCallFloating == 1 ? null : chatController.chatList.clear();
+    chatController.groupId.value = "";
+    if (widget.index != null && widget.index! >= 0) {
+      groupListController.groupList[widget.index!].unreadCount = 0;
+      // Defer refresh to avoid setState during widget tree finalization
+      WidgetsBinding.instance.addPostFrameCallback((_) {
         groupListController.groupList.refresh();
-      }
-    });
+      });
+    }
+
+    super.dispose();
   }
 
   @override
@@ -207,6 +342,7 @@ class _ChatScreenState extends State<ChatScreen> {
             backgroundColor: Colors.transparent,
             elevation: 0,
             leadingWidth: 80,
+            centerTitle: false,
             flexibleSpace: Container(
               decoration:
                   const BoxDecoration(gradient: AppColors.appBarGradient),
@@ -328,11 +464,26 @@ class _ChatScreenState extends State<ChatScreen> {
               Obx(
                 () {
                   if (chatController.isCheckingActiveCall.value) {
-                    return Center(
-                      child: const CircularProgressIndicator(
-                        color: AppColors.white,
-                        strokeWidth: 2,
-                      ),
+                    // Show disabled call buttons while checking
+                    return Row(
+                      children: [
+                        IconButton(
+                          icon: Icon(
+                            Icons.call,
+                            color: AppColors.white.withValues(alpha: 0.3),
+                            size: 26,
+                          ),
+                          onPressed: null,
+                        ),
+                        IconButton(
+                          icon: Icon(
+                            Icons.videocam,
+                            color: AppColors.white.withValues(alpha: 0.3),
+                            size: 26,
+                          ),
+                          onPressed: null,
+                        ),
+                      ],
                     );
                   }
 
@@ -389,8 +540,24 @@ class _ChatScreenState extends State<ChatScreen> {
                     }
                   }
 
+                  // Only hide buttons if call is actually still active in overlay
                   if (widget.isCallFloating == 1) {
-                    return const SizedBox.shrink();
+                    final isNewCallStillActive =
+                        Get.isRegistered<GroupCallNewController>() &&
+                            Get.find<GroupCallNewController>()
+                                .isCallActive
+                                .value;
+                    final isEmbeddedStillActive =
+                        Get.isRegistered<GroupCallEmbededController>() &&
+                            groupCallEmbededController.isCallActive.value;
+                    final isLegacyStillActive =
+                        groupcallController.isCallActive.value;
+                    if (isNewCallStillActive ||
+                        isEmbeddedStillActive ||
+                        isLegacyStillActive) {
+                      return const SizedBox.shrink();
+                    }
+                    // Call ended while in floating mode — show buttons
                   }
 
                   if (chatController.isGroupCallActive.value &&
