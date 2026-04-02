@@ -325,23 +325,48 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       // from the CallKit accept event, use that instead.
       if (currentCall == null && _lastAcceptedCallData != null) {
         debugPrint('[CallKit] Using cached accept data as fallback');
+        final cachedExtra =
+            _lastAcceptedCallData!['extra'] ?? _lastAcceptedCallData;
         currentCall = {
           'accepted': true,
-          'extra': _lastAcceptedCallData!['extra'] ?? _lastAcceptedCallData,
-          'id': _lastAcceptedCallData!['id'] ?? '',
+          'extra': cachedExtra,
+          'id': (_lastAcceptedCallData!['id'] ?? '').toString(),
         };
       }
 
-      if (currentCall != null) {
-        final extra = currentCall['extra'];
-        if (extra == null || extra is! Map) {
+      if (currentCall is Map) {
+        final currentCallMap = Map<String, dynamic>.from(currentCall);
+        final extraRaw = currentCallMap['extra'];
+
+        if (extraRaw == null || extraRaw is! Map) {
           debugPrint('[CallKit] No extra data in call, skipping');
           _lastAcceptedCallData = null;
           await FlutterCallkitIncoming.endAllCalls();
           return;
         }
-        final callType = extra['callType'];
-        if (currentCall['accepted'] == true) {
+
+        final extra = Map<String, dynamic>.from(extraRaw);
+        final groupId =
+            (extra['groupId'] ?? extra['grp'] ?? extra['roomId'] ?? '')
+                .toString()
+                .trim();
+        if (groupId.isEmpty) {
+          debugPrint('[CallKit] Missing groupId in extra payload: $extra');
+          _lastAcceptedCallData = null;
+          await FlutterCallkitIncoming.endAllCalls();
+          return;
+        }
+
+        final normalizedCallType =
+            (extra['callType'] ?? 'video').toString().toLowerCase() == 'audio'
+                ? 'audio'
+                : 'video';
+        final isVideoCall = normalizedCallType == 'video';
+        final isAccepted = currentCallMap['accepted'] == true ||
+            currentCallMap['accepted'] == 1 ||
+            currentCallMap['accepted']?.toString() == 'true';
+
+        if (isAccepted) {
           Future.delayed(const Duration(milliseconds: 2000), () async {
             final currentRoute = Get.currentRoute;
             final isOnChatScreen = Get.isRegistered<ChatScreen>() ||
@@ -389,42 +414,47 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
                 if (GroupCallNewConfig.enabled && newCallController != null) {
                   unawaited(newCallController.joinCall(
-                    roomId: currentCall['extra']['groupId'],
+                    roomId: groupId,
                     userName: localUserId,
                     userFullName: localUserName,
                     context: context,
-                    isVideoCall: callType == 'video' ? true : false,
+                    isVideoCall: isVideoCall,
                   ));
                 } else if (GroupCallEmbededConfig.enabled &&
                     embeddedController != null) {
                   unawaited(embeddedController.joinCall(
-                    roomId: currentCall['extra']['groupId'],
+                    roomId: groupId,
                     userName: localUserId,
                     userFullName: localUserName,
                     context: context,
-                    isVideoCall: callType == 'video' ? true : false,
+                    isVideoCall: isVideoCall,
                   ));
                 } else if (groupcallController != null) {
                   groupcallController.outgoingCallEmit(
-                    currentCall['extra']['groupId'],
-                    isVideoCall: callType == 'video' ? true : false,
+                    groupId,
+                    isVideoCall: isVideoCall,
                   );
                 }
               });
             } else {
               Get.off(
                 () => ChatScreen(
-                  groupId: currentCall['extra']['groupId'],
+                  groupId: groupId,
                   index: 0,
                   isAccepted: 1,
-                  callType: callType,
+                  callType: normalizedCallType,
                 ),
               );
             }
 
             // End the call in CallKit UI and clear cached data
             _lastAcceptedCallData = null;
-            await FlutterCallkitIncoming.endCall(currentCall['id']);
+            final callId = (currentCallMap['id'] ?? '').toString();
+            if (callId.isNotEmpty) {
+              await FlutterCallkitIncoming.endCall(callId);
+            } else {
+              await FlutterCallkitIncoming.endAllCalls();
+            }
           });
         } else {
           _lastAcceptedCallData = null;

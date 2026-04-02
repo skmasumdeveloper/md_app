@@ -64,6 +64,7 @@ class GroupCallNewController extends GetxController {
   int _startToken = 0;
   bool _isStarting = false;
   Completer<void>? _socketConnectCompleter;
+  final Set<String> _unsupportedVideoCodecNotifiedUsers = <String>{};
 
   // ─── Network Monitoring ────────────────────────────────────────────
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
@@ -515,6 +516,7 @@ class GroupCallNewController extends GetxController {
         required transportId,
         required kind,
         required rtpParameters,
+        required appData,
       }) async {
         CallLogger.info(_scope, 'sendTransport:produce:signal', {'kind': kind});
         final res = await _socketMgr.produce(
@@ -523,6 +525,7 @@ class GroupCallNewController extends GetxController {
           transportId: transportId,
           kind: kind,
           rtpParameters: rtpParameters.toMap(),
+          appData: appData,
         );
         return res['id'] as String? ?? '';
       };
@@ -601,6 +604,7 @@ class GroupCallNewController extends GetxController {
       CallLogger.warn(_scope, '_consumeProducer:no-rtp-caps');
       return;
     }
+    final deviceCaps = rtpCaps.toMap();
 
     CallLogger.info(_scope, '_consumeProducer', {
       'producerId': producerId,
@@ -608,15 +612,28 @@ class GroupCallNewController extends GetxController {
       'kind': kind,
     });
 
-    // MS-consume — get consumer params from server
-    final res = await _socketMgr.consumeProducer(
+    // MS-consume — first try with device RTP capabilities.
+    var res = await _socketMgr.consumeProducer(
       roomId: roomId,
       userId: _userId,
       producerId: producerId,
-      rtpCapabilities: rtpCaps.toMap(),
+      rtpCapabilities: deviceCaps,
+      capabilitySource: 'device',
     );
 
     if (res['ok'] != true) {
+      if (kind == 'video' && res['error']?.toString() == 'cannot-consume') {
+        CallLogger.warn(_scope, '_consumeProducer:cannot-consume', {
+          'producerId': producerId,
+          'userId': userId,
+          'deviceVideoCodecs': _listVideoCodecs(deviceCaps).join(','),
+        });
+        _notifyUnsupportedVideoCodec(userId,
+            codecLabel: 'an unsupported video codec');
+        _markParticipantVideoUnavailable(userId);
+        return;
+      }
+
       CallLogger.warn(_scope, '_consumeProducer:server-rejected', {
         'error': res['error'],
       });
@@ -625,6 +642,22 @@ class GroupCallNewController extends GetxController {
 
     final consumerId = res['id'] as String;
     final rtpParams = Map<String, dynamic>.from(res['rtpParameters'] as Map);
+
+    if (kind == 'video') {
+      final producerCodec = _extractPrimaryMediaCodecMimeType(rtpParams);
+      if (producerCodec != null &&
+          !_hasCodec(deviceCaps, mimeType: producerCodec)) {
+        CallLogger.warn(_scope, '_consumeProducer:unsupported-video-codec', {
+          'producerId': producerId,
+          'userId': userId,
+          'producerCodec': producerCodec,
+          'deviceVideoCodecs': _listVideoCodecs(deviceCaps).join(','),
+        });
+        _notifyUnsupportedVideoCodec(userId, codecLabel: producerCodec);
+        _markParticipantVideoUnavailable(userId);
+        return;
+      }
+    }
 
     // Consume via mediasoup recv transport (serialized queue)
     final consumer = await _mediasoupMgr.consume(
@@ -639,6 +672,10 @@ class GroupCallNewController extends GetxController {
 
     // Attach consumer to participant
     await _attachConsumerToParticipant(userId, kind, consumer);
+
+    if (kind == 'video') {
+      _unsupportedVideoCodecNotifiedUsers.remove(userId);
+    }
 
     // MS-resume-consumer (consumers start paused on server)
     _socketMgr.resumeConsumer(
@@ -723,6 +760,91 @@ class GroupCallNewController extends GetxController {
     }
 
     participants.refresh();
+  }
+
+  void _markParticipantVideoUnavailable(String userId) {
+    final participant = participants[userId];
+    if (participant == null) return;
+
+    participant.videoEnabled = false;
+    participant.isVideoRendering = false;
+    participants.refresh();
+  }
+
+  void _notifyUnsupportedVideoCodec(
+    String userId, {
+    required String codecLabel,
+  }) {
+    if (_unsupportedVideoCodecNotifiedUsers.contains(userId)) {
+      return;
+    }
+    _unsupportedVideoCodecNotifiedUsers.add(userId);
+
+    final displayName = participants[userId]?.displayName ??
+        _participantDirectory[userId] ??
+        'A participant';
+
+    Get.snackbar(
+      'Video Not Supported',
+      '$displayName video is using $codecLabel which this device cannot decode.',
+      snackPosition: SnackPosition.TOP,
+      duration: const Duration(seconds: 4),
+    );
+  }
+
+  String? _extractPrimaryMediaCodecMimeType(
+      Map<String, dynamic> rtpParameters) {
+    final codecs = rtpParameters['codecs'] as List? ?? const [];
+    for (final codecRaw in codecs) {
+      if (codecRaw is! Map) continue;
+      final codec = Map<String, dynamic>.from(codecRaw);
+      final mimeType = codec['mimeType']?.toString();
+      if (mimeType == null || mimeType.isEmpty) continue;
+
+      final lower = mimeType.toLowerCase();
+      if (lower.endsWith('/rtx') ||
+          lower.endsWith('/red') ||
+          lower.endsWith('/ulpfec') ||
+          lower.endsWith('/flexfec-03')) {
+        continue;
+      }
+      return mimeType;
+    }
+    return null;
+  }
+
+  bool _hasCodec(
+    Map<String, dynamic>? capabilities, {
+    required String mimeType,
+  }) {
+    if (capabilities == null) return false;
+
+    final codecs = capabilities['codecs'] as List? ?? const [];
+    final target = mimeType.toLowerCase();
+    for (final codecRaw in codecs) {
+      if (codecRaw is! Map) continue;
+      final codec = Map<String, dynamic>.from(codecRaw);
+      if (codec['mimeType']?.toString().toLowerCase() == target) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  List<String> _listVideoCodecs(Map<String, dynamic>? capabilities) {
+    if (capabilities == null) return const <String>[];
+
+    final codecs = capabilities['codecs'] as List? ?? const [];
+    final result = <String>[];
+    for (final codecRaw in codecs) {
+      if (codecRaw is! Map) continue;
+      final codec = Map<String, dynamic>.from(codecRaw);
+      final mimeType = codec['mimeType']?.toString().toLowerCase() ?? '';
+      if (mimeType.startsWith('video/')) {
+        result.add(mimeType.replaceFirst('video/', ''));
+      }
+    }
+    return result;
   }
 
   Future<void> _attachConsumerToParticipant(
@@ -1023,7 +1145,8 @@ class GroupCallNewController extends GetxController {
       if (rtpRes['ok'] != true) throw Exception('RTP capabilities failed');
 
       await _mediasoupMgr.loadDevice(
-          Map<String, dynamic>.from(rtpRes['rtpCapabilities'] as Map));
+        Map<String, dynamic>.from(rtpRes['rtpCapabilities'] as Map),
+      );
 
       final iceRes = await _socketMgr.getIceServers();
       final iceServers = _buildIceServerList(iceRes);
@@ -1286,6 +1409,7 @@ class GroupCallNewController extends GetxController {
   }
 
   Future<void> _removeParticipant(String oderId) async {
+    _unsupportedVideoCodecNotifiedUsers.remove(oderId);
     final participant = participants.remove(oderId);
     if (participant != null) {
       // Remove consumers from mediasoup manager
@@ -1381,6 +1505,7 @@ class GroupCallNewController extends GetxController {
     _socketConnectCompleter = null;
     _rendererRefreshTimer?.cancel();
     _rendererRefreshTimer = null;
+    _unsupportedVideoCodecNotifiedUsers.clear();
 
     _stopNetworkMonitoring();
     recordingMgr.dispose();

@@ -228,8 +228,7 @@ class CallSocketManager {
   /// BE-leave-room
   void leaveRoom({required String roomId, required String leaver}) {
     emit('BE-leave-room', {'roomId': roomId, 'leaver': leaver});
-    CallLogger.info(
-        _scope, 'leaveRoom', {'roomId': roomId, 'leaver': leaver});
+    CallLogger.info(_scope, 'leaveRoom', {'roomId': roomId, 'leaver': leaver});
   }
 
   /// BE-toggle-camera-audio
@@ -294,14 +293,21 @@ class CallSocketManager {
     required String transportId,
     required String kind,
     required Map<String, dynamic> rtpParameters,
+    Map<String, dynamic>? appData,
   }) async {
-    return emitAck('MS-produce', {
+    final payload = <String, dynamic>{
       'roomId': roomId,
       'userId': userId,
       'transportId': transportId,
       'kind': kind,
       'rtpParameters': rtpParameters,
-    });
+    };
+
+    if (appData != null && appData.isNotEmpty) {
+      payload['appData'] = appData;
+    }
+
+    return emitAck('MS-produce', payload);
   }
 
   /// MS-get-producers
@@ -321,7 +327,19 @@ class CallSocketManager {
     required String userId,
     required String producerId,
     required Map<String, dynamic> rtpCapabilities,
+    String capabilitySource = 'device',
   }) async {
+    final codecs = rtpCapabilities['codecs'] as List? ?? const [];
+    final codecSummary = codecs
+        .whereType<Map>()
+        .map((c) => c['mimeType']?.toString() ?? 'unknown')
+        .join(',');
+    CallLogger.debug(_scope, 'MS-consume:req', {
+      'producerId': producerId,
+      'capabilitySource': capabilitySource,
+      'codecs': codecSummary,
+    });
+
     return emitAck('MS-consume', {
       'roomId': roomId,
       'userId': userId,

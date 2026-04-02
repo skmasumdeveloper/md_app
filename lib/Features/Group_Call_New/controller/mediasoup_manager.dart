@@ -15,6 +15,7 @@ typedef OnTransportProduce = Future<String> Function({
   required String transportId,
   required String kind,
   required RtpParameters rtpParameters,
+  required Map<String, dynamic> appData,
 });
 
 typedef OnTransportConnectionStateChange = void Function(
@@ -67,17 +68,231 @@ class MediasoupManager {
   /// Load the mediasoup Device with router RTP capabilities.
   Future<void> loadDevice(Map<String, dynamic> routerRtpCapabilities) async {
     CallLogger.info(_scope, 'loadDevice:start');
+    Device? initialDevice;
     try {
-      _device = Device();
-      await _device!.load(
-        routerRtpCapabilities: RtpCapabilities.fromMap(routerRtpCapabilities),
-      );
-      CallLogger.info(_scope, 'loadDevice:success');
+      initialDevice = await _buildLoadedDevice(routerRtpCapabilities);
+      _device = initialDevice;
+
+      final hasRouterH264 =
+          _hasCodec(routerRtpCapabilities, mimeType: 'video/H264');
+      final initialHasH264 = _hasCodec(initialDevice.rtpCapabilities.toMap(),
+          mimeType: 'video/H264');
+
+      if (hasRouterH264 && !initialHasH264) {
+        CallLogger.warn(_scope, 'loadDevice:h264-missing-after-initial-load');
+
+        final nativeCaps = await _getNativeRtpCapabilitiesMap();
+        final preferredH264Params = _extractPreferredH264Parameters(nativeCaps);
+
+        if (preferredH264Params.isNotEmpty) {
+          final patchedCaps = _patchRouterH264Parameters(
+            routerRtpCapabilities,
+            preferredH264Params,
+          );
+
+          if (patchedCaps != null) {
+            try {
+              final fallbackDevice = await _buildLoadedDevice(patchedCaps);
+              _device = fallbackDevice;
+
+              final fallbackHasH264 = _hasCodec(
+                fallbackDevice.rtpCapabilities.toMap(),
+                mimeType: 'video/H264',
+              );
+
+              CallLogger.info(_scope, 'loadDevice:h264-compat-fallback:done', {
+                'hasH264': fallbackHasH264,
+              });
+            } catch (e) {
+              _device = initialDevice;
+              CallLogger.warn(
+                  _scope, 'loadDevice:h264-compat-fallback:failed', {
+                'error': e.toString(),
+              });
+            }
+          } else {
+            CallLogger.warn(
+                _scope, 'loadDevice:h264-compat-fallback:unchanged');
+          }
+        } else {
+          CallLogger.warn(
+              _scope, 'loadDevice:h264-compat-fallback:no-native-hint');
+        }
+      }
+
+      final loadedCaps = _device?.rtpCapabilities.toMap();
+      CallLogger.info(_scope, 'loadDevice:success', {
+        'videoCodecs': _listVideoCodecs(loadedCaps).join(','),
+      });
     } catch (e) {
       CallLogger.error(_scope, 'loadDevice:failed', {'error': e.toString()});
       _device = null;
       rethrow;
     }
+  }
+
+  Future<Device> _buildLoadedDevice(
+      Map<String, dynamic> routerRtpCapabilities) async {
+    final device = Device();
+    await device.load(
+      routerRtpCapabilities: RtpCapabilities.fromMap(routerRtpCapabilities),
+    );
+    return device;
+  }
+
+  Future<Map<String, dynamic>?> _getNativeRtpCapabilitiesMap() async {
+    final handler = HandlerInterface.handlerFactory();
+    try {
+      final nativeCaps = await handler.getNativeRtpCapabilities();
+      return nativeCaps.toMap();
+    } catch (e) {
+      CallLogger.warn(_scope, 'loadDevice:nativeCaps:failed', {
+        'error': e.toString(),
+      });
+      return null;
+    } finally {
+      try {
+        await handler.close();
+      } catch (_) {}
+    }
+  }
+
+  Map<String, dynamic> _extractPreferredH264Parameters(
+      Map<String, dynamic>? nativeCaps) {
+    if (nativeCaps == null) {
+      return const <String, dynamic>{};
+    }
+
+    final codecs = nativeCaps['codecs'] as List? ?? const [];
+    Map<String, dynamic>? bestParams;
+    var bestScore = -1;
+
+    for (final codecRaw in codecs) {
+      if (codecRaw is! Map) continue;
+
+      final codec = Map<String, dynamic>.from(codecRaw);
+      final mimeType = codec['mimeType']?.toString().toLowerCase();
+      if (mimeType != 'video/h264') continue;
+
+      final params = codec['parameters'] is Map
+          ? Map<String, dynamic>.from(codec['parameters'] as Map)
+          : <String, dynamic>{};
+
+      var score = 0;
+      if (params['profile-level-id'] != null) score += 2;
+      if (params['packetization-mode'] != null) score += 1;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestParams = params;
+      }
+    }
+
+    if (bestParams == null) {
+      return const <String, dynamic>{};
+    }
+
+    return <String, dynamic>{
+      if (bestParams['profile-level-id'] != null)
+        'profile-level-id': bestParams['profile-level-id'],
+      if (bestParams['packetization-mode'] != null)
+        'packetization-mode': bestParams['packetization-mode'],
+      'level-asymmetry-allowed': bestParams['level-asymmetry-allowed'] ?? 1,
+    };
+  }
+
+  Map<String, dynamic>? _patchRouterH264Parameters(
+    Map<String, dynamic> routerRtpCapabilities,
+    Map<String, dynamic> h264Params,
+  ) {
+    final codecs = routerRtpCapabilities['codecs'] as List?;
+    if (codecs == null || codecs.isEmpty) {
+      return null;
+    }
+
+    var changed = false;
+    final patchedCodecs = <dynamic>[];
+
+    for (final codecRaw in codecs) {
+      if (codecRaw is! Map) {
+        patchedCodecs.add(codecRaw);
+        continue;
+      }
+
+      final codec = Map<String, dynamic>.from(codecRaw);
+      final mimeType = codec['mimeType']?.toString().toLowerCase();
+
+      if (mimeType != 'video/h264') {
+        patchedCodecs.add(codec);
+        continue;
+      }
+
+      final params = codec['parameters'] is Map
+          ? Map<String, dynamic>.from(codec['parameters'] as Map)
+          : <String, dynamic>{};
+
+      h264Params.forEach((key, value) {
+        if (value == null) return;
+        if (params[key]?.toString() != value.toString()) {
+          params[key] = value;
+          changed = true;
+        }
+      });
+
+      codec['parameters'] = params;
+      patchedCodecs.add(codec);
+    }
+
+    if (!changed) {
+      return null;
+    }
+
+    final patchedCaps = Map<String, dynamic>.from(routerRtpCapabilities);
+    patchedCaps['codecs'] = patchedCodecs;
+    return patchedCaps;
+  }
+
+  bool _hasCodec(
+    Map<String, dynamic>? capabilities, {
+    required String mimeType,
+  }) {
+    if (capabilities == null) {
+      return false;
+    }
+
+    final codecs = capabilities['codecs'] as List? ?? const [];
+    final target = mimeType.toLowerCase();
+
+    for (final codecRaw in codecs) {
+      if (codecRaw is! Map) continue;
+      final codec = Map<String, dynamic>.from(codecRaw);
+      if (codec['mimeType']?.toString().toLowerCase() == target) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  List<String> _listVideoCodecs(Map<String, dynamic>? capabilities) {
+    if (capabilities == null) {
+      return const <String>[];
+    }
+
+    final codecs = capabilities['codecs'] as List? ?? const [];
+    final videoCodecs = <String>[];
+
+    for (final codecRaw in codecs) {
+      if (codecRaw is! Map) continue;
+
+      final codec = Map<String, dynamic>.from(codecRaw);
+      final mimeType = codec['mimeType']?.toString().toLowerCase() ?? '';
+      if (mimeType.startsWith('video/')) {
+        videoCodecs.add(mimeType.replaceFirst('video/', ''));
+      }
+    }
+
+    return videoCodecs;
   }
 
   /// Build RTCIceServer list from maps.
@@ -149,10 +364,15 @@ class MediasoupManager {
       final cb = data['callback'] as Function?;
       final errback = data['errback'] as Function?;
       try {
+        final appData = data['appData'] is Map
+            ? Map<String, dynamic>.from(data['appData'] as Map)
+            : const <String, dynamic>{};
+
         final producerId = await onSendTransportProduce?.call(
           transportId: _sendTransport!.id,
           kind: data['kind'] as String,
           rtpParameters: data['rtpParameters'] as RtpParameters,
+          appData: appData,
         );
         cb?.call(producerId);
       } catch (e) {
@@ -256,8 +476,8 @@ class MediasoupManager {
         source: 'mic',
       );
 
-      _audioProducer = await _producerCompleter!.future
-          .timeout(const Duration(seconds: 15));
+      _audioProducer =
+          await _producerCompleter!.future.timeout(const Duration(seconds: 15));
       CallLogger.info(_scope, 'produceAudio:success', {
         'producerId': _audioProducer!.id,
       });
@@ -279,6 +499,7 @@ class MediasoupManager {
     CallLogger.info(_scope, 'produceVideo:start');
     try {
       _producerCompleter = Completer<Producer>();
+      final appData = _buildVideoAppData(track);
 
       _sendTransport!.produce(
         track: track,
@@ -291,12 +512,14 @@ class MediasoupManager {
         ],
         stream: stream,
         source: 'webcam',
+        appData: appData,
       );
 
-      _videoProducer = await _producerCompleter!.future
-          .timeout(const Duration(seconds: 15));
+      _videoProducer =
+          await _producerCompleter!.future.timeout(const Duration(seconds: 15));
       CallLogger.info(_scope, 'produceVideo:success', {
         'producerId': _videoProducer!.id,
+        'appData': appData.toString(),
       });
       return _videoProducer;
     } catch (e) {
@@ -304,6 +527,100 @@ class MediasoupManager {
       _producerCompleter = null;
       return null;
     }
+  }
+
+  /// Build producer appData for cross-platform interoperability.
+  ///
+  /// Backend/web flows rely on width/height metadata for portrait handling
+  /// and recorder layout decisions.
+  Map<String, dynamic> _buildVideoAppData(MediaStreamTrack track) {
+    Map<String, dynamic> settings = const <String, dynamic>{};
+    try {
+      settings = track.getSettings();
+    } catch (_) {}
+
+    final width = _toPositiveInt(settings['width']) ??
+        _toPositiveInt(settings['frameWidth']) ??
+        _toPositiveInt(settings['videoWidth']) ??
+        480;
+    final height = _toPositiveInt(settings['height']) ??
+        _toPositiveInt(settings['frameHeight']) ??
+        _toPositiveInt(settings['videoHeight']) ??
+        640;
+    final rotation = _extractNormalizedRotation(settings);
+
+    return <String, dynamic>{
+      'width': width,
+      'height': height,
+      'rotation': rotation,
+    };
+  }
+
+  int _extractNormalizedRotation(Map<String, dynamic> settings) {
+    final directRotation = _toInt(settings['rotation']) ??
+        _toInt(settings['videoRotation']) ??
+        _toInt(settings['cameraRotation']) ??
+        _toInt(settings['orientationDegrees']) ??
+        _toInt(settings['screenOrientationAngle']);
+
+    if (directRotation != null) {
+      return _normalizeRightAngleRotation(directRotation);
+    }
+
+    final orientationText = (settings['orientation']?.toString() ??
+            settings['screenOrientation']?.toString() ??
+            settings['deviceOrientation']?.toString() ??
+            '')
+        .toLowerCase()
+        .replaceAll(' ', '');
+
+    if (orientationText.contains('portrait') &&
+        orientationText.contains('upside')) {
+      return 180;
+    }
+    if (orientationText.contains('portrait')) {
+      return 0;
+    }
+    if (orientationText.contains('landscape') &&
+        orientationText.contains('right')) {
+      return 270;
+    }
+    if (orientationText.contains('landscape')) {
+      return 90;
+    }
+
+    return 0;
+  }
+
+  int _normalizeRightAngleRotation(int value) {
+    final normalized = ((value % 360) + 360) % 360;
+
+    if (normalized >= 315 || normalized < 45) return 0;
+    if (normalized < 135) return 90;
+    if (normalized < 225) return 180;
+    return 270;
+  }
+
+  int? _toInt(dynamic value) {
+    if (value is int) return value;
+    if (value is double) return value.round();
+    if (value is String) return int.tryParse(value.trim());
+    return null;
+  }
+
+  int? _toPositiveInt(dynamic value) {
+    if (value is int) {
+      return value > 0 ? value : null;
+    }
+    if (value is double) {
+      final rounded = value.round();
+      return rounded > 0 ? rounded : null;
+    }
+    if (value is String) {
+      final parsed = int.tryParse(value);
+      return (parsed != null && parsed > 0) ? parsed : null;
+    }
+    return null;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -395,18 +712,31 @@ class MediasoupManager {
     });
 
     _consumerCompleter = Completer<Consumer>();
+    final primaryCodec =
+        _extractPrimaryMediaCodecMimeType(request.rtpParameters);
 
     final mediaType = request.kind == 'audio'
         ? RTCRtpMediaType.RTCRtpMediaTypeAudio
         : RTCRtpMediaType.RTCRtpMediaTypeVideo;
 
-    _recvTransport!.consume(
-      id: request.consumerId,
-      producerId: request.producerId,
-      peerId: request.peerId,
-      kind: mediaType,
-      rtpParameters: RtpParameters.fromMap(request.rtpParameters),
-    );
+    try {
+      _recvTransport!.consume(
+        id: request.consumerId,
+        producerId: request.producerId,
+        peerId: request.peerId,
+        kind: mediaType,
+        rtpParameters: RtpParameters.fromMap(request.rtpParameters),
+      );
+    } catch (e) {
+      _consumerCompleter = null;
+      CallLogger.warn(_scope, 'consume:execute:transport-rejected', {
+        'producerId': request.producerId,
+        'kind': request.kind,
+        'codec': primaryCodec ?? 'unknown',
+        'error': e.toString(),
+      });
+      return null;
+    }
 
     final consumer =
         await _consumerCompleter!.future.timeout(const Duration(seconds: 15));
@@ -421,6 +751,27 @@ class MediasoupManager {
     });
 
     return consumer;
+  }
+
+  String? _extractPrimaryMediaCodecMimeType(
+      Map<String, dynamic> rtpParameters) {
+    final codecs = rtpParameters['codecs'] as List? ?? const [];
+    for (final codecRaw in codecs) {
+      if (codecRaw is! Map) continue;
+      final codec = Map<String, dynamic>.from(codecRaw);
+      final mimeType = codec['mimeType']?.toString();
+      if (mimeType == null || mimeType.isEmpty) continue;
+
+      final lower = mimeType.toLowerCase();
+      if (lower.endsWith('/rtx') ||
+          lower.endsWith('/red') ||
+          lower.endsWith('/ulpfec') ||
+          lower.endsWith('/flexfec-03')) {
+        continue;
+      }
+      return mimeType;
+    }
+    return null;
   }
 
   /// Pause the audio producer (mute).
